@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>open-slide</title>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#fe5226">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/"><img src="/static/icon.svg" alt="" width="28" height="28">open-slide</a>
+  <nav>
+    <a class="navbtn" href="/editor/">Editor</a>
+    <a class="navbtn" href="/slides/">Published slides</a>
+  </nav>
+  <span id="updated" class="muted small"></span>
+</header>
+<main>
+  <div id="toast" role="status" hidden></div>
+
+  <section id="setup" hidden></section>
+
+  <section>
+    <div class="row space">
+      <h2>Your projects</h2>
+      <button id="new-project">+ New project</button>
+    </div>
+    <div id="projects"><p class="muted">Loading…</p></div>
+  </section>
+
+  <section>
+    <h2>Share links</h2>
+    <p class="muted small">Anyone with a link sees only that one deck, read-only, without logging in. Create one with <b>Share</b> next to a deck; revoking works immediately.</p>
+    <div id="shares"></div>
+  </section>
+
+  <details id="settings">
+    <summary>Settings</summary>
+    <h3>Claude</h3>
+    <div id="claude"></div>
+    <h3>GitHub</h3>
+    <div id="token"></div>
+  </details>
+
+  <details>
+    <summary>Activity</summary>
+    <ul id="log"></ul>
+  </details>
+</main>
+
+<dialog id="new-dlg">
+  <form method="dialog" id="new-form">
+    <h3>New project</h3>
+    <label>Name
+      <input name="name" pattern="[a-z0-9][a-z0-9\-]{0,31}" required placeholder="e.g. thesis-talk" autocomplete="off">
+      <span class="muted small">Lowercase letters, digits and dashes.</span>
+    </label>
+    <fieldset>
+      <legend>Where should the files live?</legend>
+      <label class="choice"><input type="radio" name="kind" value="local" checked>
+        <span><b>Only on this server</b><br><span class="muted small">Start right away. You can connect a GitHub repo later for backup and collaboration.</span></span></label>
+      <label class="choice"><input type="radio" name="kind" value="github">
+        <span><b>In a GitHub repo</b><br><span class="muted small">Backed up and shared with collaborators. An empty repo gets a fresh project; an existing open-slide repo is opened as is.</span></span></label>
+    </fieldset>
+    <div id="new-github" hidden>
+      <label>Repository <input name="remote" placeholder="owner/repo or https://github.com/owner/repo" autocomplete="off"></label>
+      <label>Branch <input name="branch" placeholder="main" autocomplete="off"></label>
+      <fieldset>
+        <legend>How does the server get access?</legend>
+        <label class="choice"><input type="radio" name="auth" value="token">
+          <span><b>My GitHub token</b><br><span class="muted small">For your own and your organisations’ repos. Tick the repo in the token’s settings on GitHub.</span></span></label>
+        <label class="choice"><input type="radio" name="auth" value="key">
+          <span><b>A deploy key</b><br><span class="muted small">For a colleague’s personal repo: you get a key to send them; they add it under Settings → Deploy keys.</span></span></label>
+      </fieldset>
+    </div>
+    <div class="row end"><button value="cancel" formnovalidate class="secondary">Cancel</button><button value="ok">Create</button></div>
+  </form>
+</dialog>
+
+<dialog id="share-dlg">
+  <form method="dialog" id="share-form">
+    <h3>Share “<span id="share-deck"></span>”</h3>
+    <label>Link expires
+      <select name="expires_days"><option value="1">in 1 day</option><option value="7" selected>in 7 days</option><option value="30">in 30 days</option><option value="0">never</option></select>
+    </label>
+    <label>Note for yourself <input name="note" maxlength="80" placeholder="e.g. feedback from Anna"></label>
+    <label class="check"><input type="checkbox" name="snapshot"> Freeze this version (otherwise the link shows your latest edits)</label>
+    <div class="row end"><button value="cancel" formnovalidate class="secondary">Cancel</button><button value="ok">Create link</button></div>
+  </form>
+</dialog>
+
+<dialog id="branch-dlg">
+  <form method="dialog" id="branch-form">
+    <h3>Branch of <span id="branch-project"></span></h3>
+    <p class="muted small">Now on <b id="branch-current"></b>. Your latest edits are saved to GitHub first, so nothing gets lost. Sync and publishing then follow the new branch; the editor reloads if this project is open.</p>
+    <label>Switch to <select name="branch"></select></label>
+    <label>…or create a new branch from the current state <input name="new" maxlength="64" pattern="[A-Za-z0-9._/\-]+" placeholder="e.g. feedback-anna" autocomplete="off"></label>
+    <div class="row end"><button value="cancel" formnovalidate class="secondary">Cancel</button><button value="ok">Switch</button></div>
+  </form>
+</dialog>
+
+<dialog id="connect-dlg">
+  <form method="dialog" id="connect-form">
+    <h3>Connect <span id="connect-project"></span> to GitHub</h3>
+    <p class="muted small">Create an <b>empty</b> repo on GitHub first (private is fine). The project’s files are pushed there and kept in sync from then on.</p>
+    <label>Repository <input name="remote" placeholder="owner/repo or https://github.com/owner/repo" required autocomplete="off"></label>
+    <fieldset>
+      <legend>How does the server get access?</legend>
+      <label class="choice"><input type="radio" name="auth" value="token">
+        <span><b>My GitHub token</b><br><span class="muted small">Your own and organisation repos.</span></span></label>
+      <label class="choice"><input type="radio" name="auth" value="key">
+        <span><b>A deploy key</b><br><span class="muted small">A colleague’s personal repo.</span></span></label>
+    </fieldset>
+    <div class="row end"><button value="cancel" formnovalidate class="secondary">Cancel</button><button value="ok">Connect</button></div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

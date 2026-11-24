@@ -1,0 +1,134 @@
+# Gateway: the only published port (BIND:PORT, default 127.0.0.1:8080). One host, PUBLIC_URL:
+#   /                start page + /api/*
+#   /editor/, /__*   open-slide editor
+#   /slides/...      published decks
+#   /share/<token>/  one deck via share link (meant to be public)
+# Login is NOT done here: your reverse proxy must require it for everything except /share/
+# (docs/ingress.md). What this gateway guarantees locally:
+#   - /share/ serves only real share links (strict match), never anything else
+#   - other websites can't make your browser act on the start page or editor (cross-site guard)
+#   - the editor (untrusted repo code) can't reach it: they share no network (editor-relay only
+#     forwards towards the editor)
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+(editor) {
+	reverse_proxy editor-relay:8080 {
+		# open-slide accepts edits/agent calls only if Origin == <proto>://<host>: tell it the public ones.
+		header_up X-Forwarded-Proto {$PUBLIC_SCHEME}
+		header_up X-Forwarded-Host {$PUBLIC_HOST}
+		# The editor runs code from your repos: it gets no cookies or identity headers.
+		header_up -Cookie
+		header_up -Authorization
+		header_up -Cf-Access-Jwt-Assertion
+		header_up -Cf-Access-Authenticated-User-Email
+		header_up -X-Forwarded-User
+		header_up -X-Forwarded-Email
+		header_up -Remote-User
+		header_up -Remote-Email
+	}
+}
+
+:8080 {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		-Server
+	}
+	request_body {
+		max_size 64MB
+	}
+
+	route {
+		@otherhost not host {$PUBLIC_HOST} localhost 127.0.0.1
+		respond @otherhost "unknown host" 421
+
+		# ---- share links: strictly /share/<22 chars>/..., no dot segments, no encoded dots/slashes
+		@share {
+			path_regexp share ^/share/([A-Za-z0-9_-]{22})(/.*)?$
+			not path_regexp (^|/)\.\.?(/|$)
+			not expression `{http.request.uri}.matches("(?i)%2e|%2f|%5c")`
+		}
+		handle @share {
+			root * /srv/www
+			# Never cached, so a revoked link stops working immediately.
+			header Cache-Control no-store
+			header X-Robots-Tag "noindex, nofollow"
+			header Referrer-Policy no-referrer
+			header X-Frame-Options SAMEORIGIN
+			try_files {path} /share/{re.share.1}/index.html
+			file_server
+		}
+		@sharebad path /share /share/*
+		handle @sharebad {
+			header Cache-Control no-store
+			respond 404
+		}
+
+		# ---- cross-site guard: other sites can link here, nothing more --------------------------
+		@crosssite {
+			header_regexp Sec-Fetch-Site ^(cross-site|same-site)$
+			not {
+				method GET HEAD
+				header Sec-Fetch-Mode navigate
+			}
+		}
+		respond @crosssite "cross-site request blocked" 403
+
+		header X-Frame-Options SAMEORIGIN
+		header Content-Security-Policy "frame-ancestors 'self'"
+
+		# ---- editor ------------------------------------------------------------------------------
+		# Most editor APIs live at /__*; some clients call them below the base (/editor/__*).
+		@editorapi path_regexp edapi ^/editor/(__[a-z-]+(/.*)?)$
+		handle @editorapi {
+			rewrite * /{re.edapi.1}?{query}
+			import editor
+		}
+		@editor path /editor /editor/* /__*
+		handle @editor {
+			import editor
+		}
+
+		# ---- published decks (static) -------------------------------------------------------------
+		redir /slides /slides/ 308
+		@slides path /slides/*
+		handle @slides {
+			root * /srv/www
+			header Cache-Control "private, no-cache"
+			@hashed path_regexp \/assets\/[^/]+-[A-Za-z0-9_-]{8}\.[a-z0-9]+$
+			header @hashed Cache-Control "private, max-age=31536000, immutable"
+			@pdeck path_regexp pdeck ^/slides/p/([a-z0-9-]+)/d/([A-Za-z0-9_-]+)(/.*)?$
+			@deck path_regexp deck ^/slides/d/([A-Za-z0-9_-]+)(/.*)?$
+			@proj path_regexp proj ^/slides/p/([a-z0-9-]+)(/.*)?$
+			@all path_regexp all ^/slides(/.*)$
+			handle @pdeck {
+				try_files /pd/{re.pdeck.1}/{re.pdeck.2}{re.pdeck.3} /pd/{re.pdeck.1}/{re.pdeck.2}/index.html
+				file_server
+			}
+			handle @deck {
+				try_files /d/{re.deck.1}{re.deck.2} /d/{re.deck.1}/index.html
+				file_server
+			}
+			handle @proj {
+				try_files /p/{re.proj.1}{re.proj.2} /p/{re.proj.1}/index.html
+				file_server
+			}
+			handle @all {
+				try_files /root{re.all.1} /root/index.html
+				file_server
+			}
+		}
+
+		# ---- start page + API ----------------------------------------------------------------------
+		handle {
+			reverse_proxy admin:8080 {
+				header_up -Cookie
+				header_up -Authorization
+			}
+		}
+	}
+}

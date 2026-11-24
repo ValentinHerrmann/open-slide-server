@@ -1,0 +1,164 @@
+# open-slide-server: self-hosted open-slide (slides + Claude agent) for ONE person.
+# Settings: .env (see .env.example). Data: ./data. Claude token: start page (stored in data/claude).
+#
+# Security model (details in README.md):
+#   - Only the gateway is reachable (on ${BIND}:${PORT}, default 127.0.0.1). It does NO login: put your
+#     own HTTPS + login in front, with /share/ left public (docs/ingress.md).
+#   - The editor runs code from the repos you open (Vite config, decks, the agent's tools). It has NO
+#     internet and NO real Claude token: Claude traffic goes through claude-proxy, which adds the token.
+#   - Nothing gets the Docker socket. Nothing runs as root. Every container is read-only with no capabilities.
+name: open-slide-server
+
+x-hardened: &hardened
+  user: "1000:1000"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+x-app: &app
+  <<: *hardened
+  image: ${OPEN_SLIDE_REGISTRY:-ghcr.io/valentinherrmann}/open-slide-server-app:${OPEN_SLIDE_VERSION:-latest}
+
+services:
+  gateway:
+    <<: *hardened
+    build: { context: ., target: gateway }
+    image: ${OPEN_SLIDE_REGISTRY:-ghcr.io/valentinherrmann}/open-slide-server-gateway:${OPEN_SLIDE_VERSION:-latest}
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env}
+    ports: ["${BIND:-127.0.0.1}:${PORT:-8080}:8080"]
+    volumes:
+      - ./data/public:/srv:ro
+    tmpfs: [/tmp]
+    networks: [edge, editor-link, internal]
+    mem_limit: 128m
+    pids_limit: 64
+
+  editor:
+    # open-slide dev server + the agent (Claude Code). Sees only the active project.
+    <<: *app
+    build: { context: ., target: app }
+    restart: always # exits on project switch; the restart re-mounts ./data/active
+    entrypoint: ["node", "/opt/open-slide/editor/run.mjs"]
+    environment:
+      HOME: /home/node
+      EDITOR_BASE: /editor/
+      PUBLIC_URL: ${PUBLIC_URL}
+      # Claude: placeholder token; claude-proxy swaps in the real one. No other route to the internet.
+      ANTHROPIC_BASE_URL: http://claude-proxy:8080
+      CLAUDE_CODE_OAUTH_TOKEN: replaced-by-claude-proxy
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_AUTOUPDATER: "1"
+    volumes:
+      - ./data/active:/workspace
+      - ./data/home:/home/node
+      - ./data/control:/control:ro
+    tmpfs: ["/tmp:uid=1000,exec"]
+    networks: [sandbox]
+    mem_limit: 1g
+    pids_limit: 256
+
+  editor-relay:
+    # The gateway reaches the editor only through this relay, so gateway and editor share no
+    # network: code in the editor can't reach the gateway (which does no login). The relay
+    # only ever forwards to the editor itself.
+    <<: *hardened
+    image: alpine/socat@sha256:5aa280c6fc5bee94dbd2bbdf2a58d30f50396eaa110be84b03636945b157ae68
+    user: "65534:65534"
+    command: ["TCP-LISTEN:8080,fork,reuseaddr", "TCP:editor:8080"]
+    networks: [sandbox, editor-link]
+    mem_limit: 32m
+    pids_limit: 64
+
+  claude-proxy:
+    # Holds the Claude token. Forwards only Claude API calls, only to api.anthropic.com.
+    <<: *hardened
+    image: ${OPEN_SLIDE_REGISTRY:-ghcr.io/valentinherrmann}/open-slide-server-gateway:${OPEN_SLIDE_VERSION:-latest}
+    depends_on: [gateway] # same image, built there
+    entrypoint: ["caddy", "run", "--config", "/etc/open-slide/proxy/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ./data/claude:/secrets:ro # the Claude token (start page -> worker); nobody else mounts it
+    tmpfs: [/tmp]
+    networks: [sandbox, proxy-egress]
+    mem_limit: 64m
+    pids_limit: 64
+
+  admin:
+    # Web UI backend. Powerless: reads state/view, drops request files for the worker.
+    <<: *app
+    entrypoint: ["node", "/opt/open-slide/admin/server.mjs"]
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL}
+    volumes:
+      - ./data/state/view:/state/view:ro
+      - ./data/state/requests:/state/requests
+    networks: [internal]
+    mem_limit: 96m
+    pids_limit: 32
+
+  worker:
+    # Projects, git sync (GitHub token / deploy keys), builds, share links. Runs no project code.
+    <<: *app
+    entrypoint: ["python3", "-u", "/opt/open-slide/worker/worker.py"]
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL}
+      CYCLE_SECONDS: ${CYCLE_SECONDS:-120}
+      HOME: /tmp
+    volumes:
+      - ./data:/data
+    tmpfs: ["/tmp:uid=1000"]
+    networks: [egress]
+    mem_limit: 256m
+    pids_limit: 128
+
+  builder:
+    # Static builds of decks. Runs project code, so: no network, project read-only,
+    # one project per container lifetime (the mount follows ./data/build-src).
+    <<: *app
+    restart: always
+    entrypoint: ["node", "/opt/open-slide/runner/runner.mjs", "build"]
+    volumes:
+      - ./data/build-src:/src:ro
+      - ./data/jobs/build:/jobs
+    tmpfs: ["/tmp:uid=1000,exec"]
+    network_mode: none
+    mem_limit: 1g
+    pids_limit: 256
+
+  deps:
+    # npm ci --ignore-scripts (no install scripts run) for one project at a time.
+    <<: *app
+    restart: always
+    entrypoint: ["node", "/opt/open-slide/runner/runner.mjs", "deps"]
+    volumes:
+      - ./data/deps-src:/src
+      - ./data/jobs/deps:/jobs
+    tmpfs: ["/tmp:uid=1000,exec"]
+    networks: [egress]
+    mem_limit: 1g
+    pids_limit: 256
+
+networks:
+  edge: {} # gateway: the published port
+  egress: {} # worker (GitHub), deps (npm registry)
+  proxy-egress: {} # claude-proxy -> api.anthropic.com
+  sandbox:
+    # editor <-> claude-proxy, editor <-> editor-relay. No internet (internal) and no IP for the host
+    # on this bridge (inhibit_ipv4), so the editor can't reach host services either.
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
+  editor-link:
+    # gateway <-> editor-relay
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
+  internal:
+    # gateway <-> admin
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"

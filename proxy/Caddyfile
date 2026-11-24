@@ -1,0 +1,41 @@
+# claude-proxy: the ONLY container that can read the Claude token (/secrets/token = data/claude/token,
+# saved via the start page; read on every request, so a new token works without a restart). The editor sends Claude API calls here with a placeholder token; this
+# replaces it and forwards to api.anthropic.com. Fixed upstream and a path allowlist, so it is
+# not a general proxy and can't be used to send data anywhere else.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	log {
+		output stdout
+		format filter {
+			request>headers delete
+			resp_headers delete
+		}
+	}
+	request_body {
+		max_size 64MB
+	}
+	@claude {
+		method POST GET
+		path /v1/messages /v1/messages/count_tokens /v1/models /v1/models/*
+	}
+	handle @claude {
+		reverse_proxy https://api.anthropic.com {
+			header_up Host api.anthropic.com
+			header_up Authorization "Bearer {file./secrets/token}"
+			header_up -X-Api-Key
+			header_up -Cookie
+			header_up -X-Forwarded-For
+			header_up -X-Forwarded-Host
+			header_up -X-Forwarded-Proto
+			header_up -Via
+		}
+	}
+	handle {
+		respond "not allowed by claude-proxy" 403
+	}
+}
