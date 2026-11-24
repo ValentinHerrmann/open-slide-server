@@ -146,6 +146,16 @@ function connectDialog(p) {
   dlg.showModal();
 }
 
+function removeProject(p) {
+  const msg = p.repo
+    ? `Remove "${p.name}" from this server?\n\nYour latest edits are saved to GitHub first; the repo ${p.repo} is not touched and you can add it again any time. Share links of this project stop working.\n\nType the project name to confirm:`
+    : `Delete "${p.name}" for good?\n\nIt is NOT on GitHub, so its decks are lost. Share links of this project stop working.\n\nType the project name to confirm:`;
+  const typed = prompt(msg);
+  if (typed === null) return;
+  if (typed.trim() !== p.name) return toast('The name didn’t match; nothing was removed.', true);
+  request('remove_project', { name: p.name, confirm: p.name }, `Removing ${p.name}`);
+}
+
 function shareDialog(p, deck) {
   const dlg = $('#share-dlg');
   const form = $('#share-form');
@@ -289,14 +299,15 @@ function renderProject(p) {
       ready ? h('button', { class: 'small secondary', onclick: () => request('rebuild', { name: p.name }, 'Rebuilding the published version') }, 'Rebuild published version') : null,
       p.repo && ['ready', 'need_key', 'need_token'].includes(p.state) ? h('button', {
         class: 'small secondary', onclick: () => request('set_auth', { name: p.name, auth: p.auth === 'token' ? 'key' : 'token' }, 'Changing the access method'),
-      }, p.auth === 'token' ? 'Use a deploy key instead of my token' : 'Use my token instead of a deploy key') : null),
+      }, p.auth === 'token' ? 'Use a deploy key instead of my token' : 'Use my token instead of a deploy key') : null,
+      h('button', { class: 'small danger', onclick: () => removeProject(p) }, p.repo ? 'Remove from this server' : 'Delete project')),
     p.last_build ? h('p', { class: 'muted small' }, `Last build ${ago(p.last_build.t)}${p.last_build.ok ? '' : ' (failed, see Activity)'}`) : null);
 
   card.append(h('div', { class: 'row space foot' },
     h('div', { class: 'row' },
       ready ? h('button', { onclick: () => openInEditor(p) }, p.active ? 'Open editor' : 'Open in editor') : null,
       pubToggle),
-    ready ? more : null));
+    ready ? more : h('button', { class: 'small danger', onclick: () => removeProject(p) }, p.repo ? 'Remove from this server' : 'Delete project')));
   return card;
 }
 

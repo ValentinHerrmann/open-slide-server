@@ -751,6 +751,35 @@ def act_switch_branch(s, a):
     return True, {"branch": target}
 
 
+def act_remove_project(s, a):
+    """Remove a project from this server. Never touches GitHub. A connected project is synced first,
+    so no edit is lost; a project without GitHub is deleted for good (the UI asks for its name)."""
+    name = need_project(s, a)
+    p = s["projects"][name]
+    if a.get("confirm") != name:
+        return False, "confirmation missing"
+    if p.get("repo") and p.get("state") == "ready":
+        if p.get("conflict"):
+            return False, "resolve the sync conflict first, so nothing is lost"
+        sync_project(s, name)
+        if (p.get("last_sync") or {}).get("result") != "ok":
+            return False, f"couldn't save the latest edits to GitHub first: {(p.get('last_sync') or {}).get('detail', '')}"
+    if active_project() == name:
+        symlink("projects/.none", f"{DATA}/active")
+        restart_editor()
+    for tok in [t for t, sh in s["shares"].items() if sh["project"] == name]:
+        del s["shares"][tok]
+    del s["projects"][name]
+    prune(s, targets(s))
+    for path in (f"{PROJECTS}/{name}", f"{GITDIRS}/{name}.git", f"{KEYS}/{name}"):
+        shutil.rmtree(path, ignore_errors=True)
+    log(s, f"removed from this server{' (the GitHub repo ' + p['repo'] + ' is unchanged)' if p.get('repo') else ''}", name, "warn")
+    rest = [n for n, q in s["projects"].items() if q.get("state") in ("ready", "local")]
+    if not active_project() and rest:
+        set_active(HOME_PROJECT if HOME_PROJECT in rest else sorted(rest)[0])
+    return True, "removed"
+
+
 def share_url(tok):
     return f"{PUBLIC_URL}/share/{tok}/"
 
@@ -791,7 +820,7 @@ ACTIONS = {"add_project": act_add_project, "connect": act_connect, "switch": act
            "set_auth": act_set_auth, "set_token": act_set_token, "remove_token": act_remove_token,
            "set_claude_token": act_set_claude_token, "remove_claude_token": act_remove_claude_token,
            "rebuild": act_rebuild, "set_publish": act_set_publish, "resolve": act_resolve,
-           "list_branches": act_list_branches, "switch_branch": act_switch_branch,
+           "remove_project": act_remove_project, "list_branches": act_list_branches, "switch_branch": act_switch_branch,
            "share_create": act_share_create, "share_revoke": act_share_revoke}
 
 

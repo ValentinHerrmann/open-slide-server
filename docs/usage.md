@@ -13,6 +13,8 @@ Open your URL. The start page shows your projects with their decks, your share l
   - An **empty** repo gets a fresh open-slide project, which is pushed as the first commit.
   - An existing open-slide repo is cloned and its dependencies installed. The repo needs no changes for this server.
 
+- **Remove a project:** use **More → Remove from this server** on its card. The GitHub repo is never touched: your latest edits are saved there first, and you can add the repo again any time. A project that isn't on GitHub is deleted for good (**Delete project**), so you confirm by typing its name. Its share links stop working.
+
 ## GitHub: token or deploy key
 
 - **Fine-grained token** (recommended for your own and your organisations' repos):
