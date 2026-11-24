@@ -18,10 +18,20 @@ Everything runs from one `docker compose` file and lives on **one host name**:
 | `/slides/` | your published decks | you (and whoever else your login allows) |
 | `/share/<token>/` | one deck via share link | anyone with the link |
 
-**Login is your job:**
-- The stack listens on `127.0.0.1` only and does no login itself.
-- Your reverse proxy provides HTTPS and must require login for everything except `/share/`.
-- Our responsibility ends at the local port.
+> [!CAUTION]
+> **open-slide-server has no login of its own.** It listens on `127.0.0.1` only. **You** must put
+> HTTPS and a login in front of it, for everything except `/share/`
+> ([protection setups](#protection-setups) below).
+>
+> If the start page, `/editor/` or `/__*` are reachable without login, **anyone who finds the URL can**:
+> - **use your Claude subscription**: the agent runs as you, on your quota
+> - **read, change and delete all your decks**, and run code in the editor sandbox
+> - **push to every GitHub repo** your token or deploy keys can write to (sync is automatic)
+> - **create public share links**, and replace or remove your tokens
+>
+> The Claude token itself stays hidden even then (only the Claude proxy can read it), but everything
+> it unlocks is open. Never publish the port directly, and never set `BIND=0.0.0.0` without a
+> firewall and a login in front.
 
 ## Quick start
 
@@ -39,12 +49,36 @@ git clone https://github.com/ValentinHerrmann/open-slide-server.git && cd open-s
 3. Prepares `./data`, starts everything and runs the self-check (`scripts/check.sh`).
 
 Then:
-1. Point your reverse proxy at `127.0.0.1:<port>` ([docs/ingress.md](docs/ingress.md)) and open your URL.
+1. Choose a [protection setup](#protection-setups) and point it at `127.0.0.1:<port>`. **Test it** (below) before you use it.
 2. Under **Claude** on the start page, paste a token from `claude setup-token`. Run it on any computer with Claude Code; it's valid for one year.
 
 How to use the start page: [docs/usage.md](docs/usage.md).
 
 The Claude agent only works with your own subscription. It is a single-user tool: don't give others access to your editor.
+
+## Protection setups
+
+Pick one; step-by-step configs are in [docs/ingress.md](docs/ingress.md). Whatever you choose, it must
+(1) serve HTTPS, (2) require **your** login for everything, (3) except paths starting with `/share/`
+(share links are meant to work without login).
+
+| Setup | Good for | Effort | Notes |
+|---|---|---|---|
+| **Cloudflare Tunnel + Access** | most people: reachable from anywhere, no open ports | ~20 min, free plan | Login by email code / Google / GitHub. Needs a domain on Cloudflare. `/share` = one "Bypass" rule. |
+| **Tailscale only** | just you, on your own devices | ~5 min | `tailscale serve` → only your tailnet can reach it. Share links only work for people in your tailnet. Don't use Funnel: it would make everything public. |
+| **Caddy + basic auth** | quick start on a server with a public IP | ~10 min | One long random password (password manager). Simple, but no 2FA and no lockout: use a strong password. |
+| **Caddy/nginx + SSO proxy** (Authelia, authentik, oauth2-proxy) | you already run one, or want 2FA without Cloudflare | 30–60 min | Most control; you maintain the auth service. |
+
+**Test your protection** from a device that is *not* logged in (e.g. a private browser window or `curl` from another network):
+
+```sh
+curl -sI https://slides.example.com/          # must be a login page/redirect (302/401), never 200
+curl -sI https://slides.example.com/editor/   # same
+curl -sI https://slides.example.com/__agent/status   # same
+curl -sI https://slides.example.com/share/AAAAAAAAAAAAAAAAAAAAAA/   # 404 (reaches the server, no such link)
+```
+
+If any of the first three returns `200`, stop the stack (`docker compose stop`) until your login works. (With Tailscale only, "can't connect" from outside your tailnet is the expected result.)
 
 ## Security model
 
