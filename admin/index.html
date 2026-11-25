@@ -45,6 +45,8 @@
     <div id="claude"></div>
     <h3>GitHub</h3>
     <div id="token"></div>
+    <h4>SSH key for your GitHub account</h4>
+    <div id="sshkey"></div>
   </details>
 
   <details>
@@ -74,6 +76,8 @@
         <legend>How does the server get access?</legend>
         <label class="choice"><input type="radio" name="auth" value="token">
           <span><b>My GitHub token</b><br><span class="muted small">For your own and your organisations’ repos. Tick the repo in the token’s settings on GitHub.</span></span></label>
+        <label class="choice"><input type="radio" name="auth" value="ssh">
+          <span><b>My SSH key</b><br><span class="muted small">Every repo your GitHub account can write to, including colleagues’ repos where you’re a collaborator. Nothing to set up per repo.</span></span></label>
         <label class="choice"><input type="radio" name="auth" value="key">
           <span><b>A deploy key</b><br><span class="muted small">For a colleague’s personal repo: you get a key to send them; they add it under Settings → Deploy keys.</span></span></label>
       </fieldset>
@@ -113,6 +117,8 @@
       <legend>How does the server get access?</legend>
       <label class="choice"><input type="radio" name="auth" value="token">
         <span><b>My GitHub token</b><br><span class="muted small">Your own and organisation repos.</span></span></label>
+      <label class="choice"><input type="radio" name="auth" value="ssh">
+        <span><b>My SSH key</b><br><span class="muted small">Any repo your GitHub account can write to.</span></span></label>
       <label class="choice"><input type="radio" name="auth" value="key">
         <span><b>A deploy key</b><br><span class="muted small">A colleague’s personal repo.</span></span></label>
     </fieldset>

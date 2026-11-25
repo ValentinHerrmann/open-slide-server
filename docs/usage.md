@@ -15,14 +15,29 @@ Open your URL. The start page shows your projects with their decks, your share l
 
 - **Remove a project:** use **More → Remove from this server** on its card. The GitHub repo is never touched: your latest edits are saved there first, and you can add the repo again any time. A project that isn't on GitHub is deleted for good (**Delete project**), so you confirm by typing its name. Its share links stop working.
 
-## GitHub: token or deploy key
+## GitHub access: three ways
 
-- **Fine-grained token** (recommended for your own and your organisations' repos):
+Each project uses one of these; you choose when connecting it and can switch under **More** on its card.
+
+| Method | Reaches | Set up | Good for |
+|---|---|---|---|
+| **Fine-grained token** | only the repos you tick, own and organisation repos | once | your own repos, least access |
+| **SSH key of your account** | every repo your GitHub account can write to, incl. colleagues' personal repos where you're a collaborator | once | working in many colleagues' repos |
+| **Deploy key** | exactly one repo | per repo, by its owner | a single repo you aren't a collaborator on |
+
+- **Fine-grained token:**
   1. On GitHub, go to Settings → Developer settings → Fine-grained tokens → Generate.
   2. Under *Repository access*, choose **Only select repositories**. Under *Permissions → Contents*, choose **Read and write**.
   3. Paste the token under **Settings → GitHub** on the start page. It's stored for the worker only and never shown again.
   4. To add more repos later, tick them on GitHub; nothing changes on the server.
-- **Deploy key**, for a colleague's personal repo: GitHub doesn't let your token reach those.
+  - GitHub doesn't let fine-grained tokens reach other people's personal repos, so use one of the other two methods for those.
+- **SSH key of your account:**
+  1. Under **Settings → GitHub → SSH key for your GitHub account**, click **Create SSH key** and copy it.
+  2. On GitHub, go to Settings → SSH and GPG keys → New SSH key (type *Authentication Key*), and paste it.
+  3. Click **Check**: the start page shows which GitHub account the key belongs to.
+  4. For a colleague's repo, they add you as a collaborator once (as for any shared repo), and you connect it with **My SSH key**.
+  - GitHub can't limit such a key to some repos, so it can write to everything your account can. It is kept only in the sync worker, which never runs repo code. Delete it on GitHub to revoke it instantly.
+- **Deploy key:**
   - The start page shows a key for that one repo. The owner adds it under *Settings → Deploy keys* with **Allow write access**.
   - Then click **Done: check again**.
 

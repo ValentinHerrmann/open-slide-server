@@ -101,6 +101,9 @@ async function openInEditor(p, path = '') {
   toast('The editor takes unusually long to start; try the Editor button in a moment.', true);
 }
 
+const defaultAuth = () => (state.token ? 'token' : state.ssh?.login ? 'ssh' : 'key');
+const AUTH_NAMES = { token: 'my token', ssh: 'my SSH key', key: 'a deploy key' };
+
 function radio(form, name, value) {
   for (const r of form.querySelectorAll(`input[name=${name}]`)) r.checked = r.value === value;
 }
@@ -110,7 +113,7 @@ function newProjectDialog() {
   const dlg = $('#new-dlg');
   const form = $('#new-form');
   form.reset();
-  radio(form, 'auth', state.token ? 'token' : 'key');
+  radio(form, 'auth', defaultAuth());
   const sync = () => {
     const gh = form.kind.value === 'github';
     $('#new-github').hidden = !gh;
@@ -137,7 +140,7 @@ function connectDialog(p) {
   const form = $('#connect-form');
   form.reset();
   $('#connect-project').textContent = p.name;
-  radio(form, 'auth', state.token ? 'token' : 'key');
+  radio(form, 'auth', defaultAuth());
   dlg.onclose = () => {
     if (dlg.returnValue !== 'ok') return;
     const f = new FormData(form);
@@ -200,7 +203,7 @@ function renderSetup() {
   const todo = [];
   if (!state.claude) todo.push(h('li', {}, h('b', {}, 'Save your Claude token'), ' so the agent in the editor works. ',
     h('button', { class: 'link', onclick: () => openSettings('#claude') }, 'Open settings')));
-  if (!state.token && !state.projects.some((p) => p.repo)) todo.push(h('li', {}, 'Optional: ', h('b', {}, 'save a GitHub token'),
+  if (!state.token && !state.ssh && !state.projects.some((p) => p.repo)) todo.push(h('li', {}, 'Optional: ', h('b', {}, 'save a GitHub token'),
     ' to back up projects and work with collaborators. ', h('button', { class: 'link', onclick: () => openSettings('#token') }, 'Open settings')));
   const box = $('#setup');
   box.hidden = !todo.length;
@@ -218,6 +221,7 @@ function status(p) {
   if (p.conflict) return ['bad', 'Sync paused: conflicting changes'];
   if (p.state === 'need_token') return ['warn', 'Waiting for GitHub access (token)'];
   if (p.state === 'need_key') return ['warn', 'Waiting for GitHub access (deploy key)'];
+  if (p.state === 'need_ssh') return ['warn', 'Waiting for GitHub access (SSH key)'];
   if (!p.repo) return ['', 'Only on this server (no backup)'];
   const ls = p.last_sync;
   if (!ls) return ['', 'Connected to GitHub'];
@@ -242,6 +246,15 @@ function attention(p) {
           ', edit the token and add this repo under “Repository access” (Contents: Read and write).']
         : ['Save a GitHub token first: ', h('button', { class: 'link', onclick: () => openSettings('#token') }, 'open settings'), '.']),
       h('div', { class: 'row' }, h('button', { onclick: connect }, 'Done: check again')));
+  }
+  if (p.state === 'need_ssh') {
+    return h('div', { class: 'callout warn' },
+      h('p', {}, state.ssh
+        ? ['The server can’t access ', h('b', {}, p.repo), ' with your SSH key',
+          state.ssh.login ? [' (GitHub account ', h('b', {}, state.ssh.login), ')'] : ' (the key isn’t on your GitHub account yet)',
+          '. Make sure the key is added to your account and that your account has write access to the repo: for a colleague’s repo, ask them once to add you as a collaborator.']
+        : ['Create the server’s SSH key first and add it to your GitHub account: ', h('button', { class: 'link', onclick: () => openSettings('#sshkey') }, 'open settings'), '.']),
+      h('div', { class: 'row' }, h('button', { onclick: () => request('connect', { name: p.name }, 'Checking access and syncing') }, 'Done: check again')));
   }
   if (p.state === 'need_key') {
     return h('div', { class: 'callout warn' },
@@ -297,9 +310,10 @@ function renderProject(p) {
     h('div', { class: 'row' },
       p.repo && p.state === 'ready' ? h('button', { class: 'small secondary', onclick: () => request('sync', { name: p.name }, 'Syncing with GitHub') }, 'Sync with GitHub now') : null,
       ready ? h('button', { class: 'small secondary', onclick: () => request('rebuild', { name: p.name }, 'Rebuilding the published version') }, 'Rebuild published version') : null,
-      p.repo && ['ready', 'need_key', 'need_token'].includes(p.state) ? h('button', {
-        class: 'small secondary', onclick: () => request('set_auth', { name: p.name, auth: p.auth === 'token' ? 'key' : 'token' }, 'Changing the access method'),
-      }, p.auth === 'token' ? 'Use a deploy key instead of my token' : 'Use my token instead of a deploy key') : null,
+      p.repo && ['ready', 'need_key', 'need_token', 'need_ssh'].includes(p.state)
+        ? ['token', 'ssh', 'key'].filter((a) => a !== p.auth).map((a) => h('button', {
+          class: 'small secondary', onclick: () => request('set_auth', { name: p.name, auth: a }, 'Changing the access method'),
+        }, `Access via ${AUTH_NAMES[a]}`)) : null,
       h('button', { class: 'small danger', onclick: () => removeProject(p) }, p.repo ? 'Remove from this server' : 'Delete project')),
     p.last_build ? h('p', { class: 'muted small' }, `Last build ${ago(p.last_build.t)}${p.last_build.ok ? '' : ' (failed, see Activity)'}`) : null);
 
@@ -362,6 +376,25 @@ function renderToken() {
       '. You can add more repos there later without changing anything here. The token is only used for syncing and never shown again.'));
 }
 
+function renderSsh() {
+  const k = state.ssh;
+  const box = $('#sshkey');
+  if (!k) {
+    return box.replaceChildren(
+      h('p', { class: 'muted small' }, 'Lets the server reach every repo your GitHub account can, including colleagues’ personal repos where you’re a collaborator, without asking them for a deploy key. ',
+        'GitHub can’t limit such a key to certain repos, so it can write to all of them; it is only used by the sync worker, which never runs repo code.'),
+      h('button', { onclick: () => request('create_ssh_key', {}, 'Creating the SSH key') }, 'Create SSH key'));
+  }
+  box.replaceChildren(
+    h('p', {}, k.login ? h('span', { class: 'badge ok' }, `works · GitHub account ${k.login}`) : h('span', { class: 'badge warn' }, 'not on GitHub yet')),
+    h('div', { class: 'row' }, h('code', { class: 'key' }, k.pubkey), h('button', { class: 'small secondary', onclick: () => copy(k.pubkey) }, 'Copy key')),
+    k.login ? null : h('p', { class: 'small' }, '1. Copy the key. 2. On GitHub: ', h('a', { href: 'https://github.com/settings/ssh/new' }, 'Settings → SSH and GPG keys → New SSH key'),
+      ' (key type “Authentication Key”, title e.g. “open-slide server”). 3. Check:'),
+    h('div', { class: 'row' },
+      h('button', { class: k.login ? 'small secondary' : '', onclick: () => request('check_ssh_key', {}, 'Checking the SSH key with GitHub') }, k.login ? 'Check again' : 'Check'),
+      h('button', { class: 'small danger', onclick: () => confirm('Remove the SSH key from this server? Projects using it stop syncing. Also delete it on GitHub.') && request('remove_ssh_key', {}, 'Removing the SSH key') }, 'Remove')));
+}
+
 function render() {
   $('#updated').textContent = `updated ${ago(state.updated)}`;
   renderSetup();
@@ -369,6 +402,7 @@ function render() {
   renderShares();
   renderClaude();
   renderToken();
+  renderSsh();
   $('#log').replaceChildren(...state.log.slice(0, 40).map((l) => h('li', { class: l.level },
     h('span', { class: 'muted small' }, new Date(l.t * 1000).toLocaleString(), ' '), l.project ? h('b', {}, `${l.project}: `) : null, l.msg)));
 }

@@ -43,7 +43,9 @@ PAT_RE = re.compile(r"^github_pat_[A-Za-z0-9_]{40,250}$")
 CLAUDE_DIR = f"{DATA}/claude"  # read only by claude-proxy (Caddy reads the file per request)
 CLAUDE_RE = re.compile(r"^sk-ant-oat01-[A-Za-z0-9_-]{20,400}$")
 TOKEN_DIR = f"{KEYS}/_token"  # fine-grained GitHub token (not a valid project name, so no clash)
-AUTHS = ("token", "key")
+ACCOUNT_DIR = f"{KEYS}/_account"  # SSH key for the user's whole GitHub account (not a valid project name)
+AUTHS = ("token", "ssh", "key")  # fine-grained token | account SSH key | per-repo deploy key
+AUTH_LABEL = {"token": "your GitHub token", "ssh": "your account's SSH key", "key": "a deploy key"}
 BRANCH_RE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9._/-]{1,64}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22}$")
 REQID_RE = re.compile(r"^[a-z0-9-]{8,40}$")
@@ -66,6 +68,7 @@ def load():
     s.setdefault("built", {})  # target key -> fingerprint it was built from
     s.setdefault("log", [])
     s.setdefault("token", None)
+    s.setdefault("ssh", None)
     return s
 
 
@@ -120,13 +123,13 @@ def symlink(target, path):
 
 # ---------------------------------------------------------------- git (in-process, no project code)
 def key_dir(name, p):
-    return TOKEN_DIR if p.get("auth") == "token" else f"{KEYS}/{name}"
+    return {"token": TOKEN_DIR, "ssh": ACCOUNT_DIR}.get(p.get("auth"), f"{KEYS}/{name}")
 
 
 def git_sync(name, mode, p, **extra):
     env = {**{k.upper(): str(v) for k, v in extra.items()},"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/tmp",
            "REPO_GIT": f"{GITDIRS}/{name}.git", "WORK": f"{PROJECTS}/{name}", "KEY_DIR": key_dir(name, p),
-           "AUTH": p.get("auth", "key"), "MODE": mode, "REMOTE": remote_url(p), "BRANCH": p["branch"]}
+           "AUTH": "token" if p.get("auth") == "token" else "key", "MODE": mode, "REMOTE": remote_url(p), "BRANCH": p["branch"]}
     try:
         r = run(["sh", SYNC_SH], timeout=300, env=env)
     except subprocess.TimeoutExpired:
@@ -299,6 +302,32 @@ def ensure_key(name):
         return f.read().strip()
 
 
+def ensure_account_key():
+    """One SSH key for the user's GitHub account: reaches every repo the account can (incl. colleagues')."""
+    os.makedirs(ACCOUNT_DIR, mode=0o700, exist_ok=True)
+    if not os.path.exists(f"{ACCOUNT_DIR}/id"):
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "open-slide-server", "-f", f"{ACCOUNT_DIR}/id"])
+    shutil.copy(known_hosts(), f"{ACCOUNT_DIR}/known_hosts")
+    os.chmod(f"{ACCOUNT_DIR}/id", 0o600)
+    os.chmod(ACCOUNT_DIR, 0o700)
+    with open(f"{ACCOUNT_DIR}/id.pub") as f:
+        return f.read().strip()
+
+
+def ssh_login():
+    """Which GitHub account the account key belongs to (None if GitHub doesn't know the key yet)."""
+    if not os.path.exists(f"{ACCOUNT_DIR}/id"):
+        return None
+    try:
+        r = run(["ssh", "-T", "-i", f"{ACCOUNT_DIR}/id", "-o", "IdentitiesOnly=yes", "-o", f"UserKnownHostsFile={ACCOUNT_DIR}/known_hosts",
+                 "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "git@github.com"], timeout=30,
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": "/tmp"})
+    except subprocess.TimeoutExpired:
+        return None
+    m = re.search(r"Hi ([A-Za-z0-9-]{1,39})! You've successfully authenticated", r.stdout + r.stderr)
+    return m.group(1) if m else None
+
+
 def ensure_gitdir(name):
     os.makedirs(f"{GITDIRS}/{name}.git", exist_ok=True)
 
@@ -325,7 +354,11 @@ def connect(s, name):
     if p.get("auth") == "token":
         if not os.path.exists(f"{TOKEN_DIR}/token"):
             p["state"] = "need_token"
-            return False, "No GitHub token saved yet (see 'GitHub token')."
+            return False, "No GitHub token saved yet (Settings -> GitHub)."
+    elif p.get("auth") == "ssh":
+        if not os.path.exists(f"{ACCOUNT_DIR}/id"):
+            p["state"] = "need_ssh"
+            return False, "No SSH key yet: create it under Settings -> GitHub and add it to your GitHub account."
     else:
         ensure_key(name)
     ensure_gitdir(name)
@@ -336,6 +369,11 @@ def connect(s, name):
             log(s, f"token has no access to {p['repo']} yet ({detail})", name, "warn")
             return False, (f"The token can't access {p['repo']}. On GitHub, add the repo to the token "
                            "(Repository access) with Contents: Read and write, then try again.")
+        if p.get("auth") == "ssh":
+            p["state"] = "need_ssh"
+            log(s, f"your account's SSH key has no access to {p['repo']} yet ({detail})", name, "warn")
+            return False, (f"No access to {p['repo']} with your SSH key. Check that the key is added to your GitHub account "
+                           "and that your account has write access to the repo (ask the owner to add you as collaborator).")
         p["state"] = "need_key"
         log(s, f"no access to {p['repo']} yet ({detail})", name, "warn")
         return False, "No access yet. Add the deploy key (with write access) on GitHub, then try again."
@@ -358,7 +396,7 @@ def connect(s, name):
         p["state"] = "error"
         log(s, f"{mode} failed: {detail}", name, "error")
         return False, detail
-    log(s, f"connected to {p['repo']} via {'token' if p.get('auth') == 'token' else 'deploy key'} ({mode})", name)
+    log(s, f"connected to {p['repo']} via {AUTH_LABEL.get(p.get('auth'), 'a deploy key')} ({mode})", name)
     if not os.path.isdir(f"{work}/node_modules") or p.get("lock_hash") != lock_hash(name):
         p["state"] = "installing"
         save(s)
@@ -547,8 +585,8 @@ def act_add_project(s, a):
             return False, "project directory exists"
         p = s["projects"][name] = {"created": now(), "publish": False}
     p.update(repo=repo, branch=branch, auth=auth)
-    if auth == "token":
-        log(s, f"added {repo} (via token)", name)
+    if auth in ("token", "ssh"):
+        log(s, f"added {repo} (via {AUTH_LABEL[auth]})", name)
         return connect(s, name)
     p["state"] = "need_key"
     pub = ensure_key(name)
@@ -562,13 +600,13 @@ def act_set_auth(s, a):
     if auth not in AUTHS or not p.get("repo"):
         return False, "invalid"
     p["auth"] = auth
-    log(s, f"now using {'the token' if auth == 'token' else 'a deploy key'}", name)
+    log(s, f"now using {AUTH_LABEL[auth]}", name)
     if auth == "key":
         ensure_key(name)
     if p.get("state") == "ready":
         code, detail = git_sync(name, "test", p)
         if code not in ("ok", "ok_empty"):
-            p["state"] = "need_token" if auth == "token" else "need_key"
+            p["state"] = {"token": "need_token", "ssh": "need_ssh"}.get(auth, "need_key")
             return False, f"no access with the new method yet: {detail}"
         return True, "switched"
     return connect(s, name)
@@ -643,6 +681,35 @@ def act_remove_claude_token(s, a):
         pass
     s["claude"] = None
     log(s, "Claude token removed; the agent stops working until a new one is saved", level="warn")
+    return True, "removed"
+
+
+def act_create_ssh_key(s, a):
+    pub = ensure_account_key()
+    log(s, "SSH key for your GitHub account created; add it on GitHub (Settings -> SSH and GPG keys)")
+    return True, {"pubkey": pub}
+
+
+def act_check_ssh_key(s, a):
+    login = ssh_login()
+    if not login:
+        s["ssh"] = None
+        return False, "GitHub doesn't know this key yet. Add it under GitHub -> Settings -> SSH and GPG keys -> New SSH key, then check again."
+    s["ssh"] = {"login": login, "checked": now()}
+    log(s, f"SSH key works for GitHub account {login}")
+    for name, p in s["projects"].items():
+        if p.get("auth") == "ssh" and p.get("state") == "need_ssh":
+            connect(s, name)
+    return True, {"login": login}
+
+
+def act_remove_ssh_key(s, a):
+    shutil.rmtree(ACCOUNT_DIR, ignore_errors=True)
+    s["ssh"] = None
+    for p in s["projects"].values():
+        if p.get("auth") == "ssh" and p.get("repo"):
+            p["state"] = "need_ssh"
+    log(s, "SSH key removed from the server; also delete it on GitHub. Projects using it stop syncing", level="warn")
     return True, "removed"
 
 
@@ -821,6 +888,7 @@ def act_share_revoke(s, a):
 
 ACTIONS = {"add_project": act_add_project, "connect": act_connect, "switch": act_switch, "sync": act_sync,
            "set_auth": act_set_auth, "set_token": act_set_token, "remove_token": act_remove_token,
+           "create_ssh_key": act_create_ssh_key, "check_ssh_key": act_check_ssh_key, "remove_ssh_key": act_remove_ssh_key,
            "set_claude_token": act_set_claude_token, "remove_claude_token": act_remove_claude_token,
            "rebuild": act_rebuild, "set_publish": act_set_publish, "resolve": act_resolve,
            "remove_project": act_remove_project, "list_branches": act_list_branches, "switch_branch": act_switch_branch,
@@ -878,12 +946,20 @@ def apply_requests(s):
 
 
 # ---------------------------------------------------------------- view for the UI
+def ssh_view(s):
+    if not os.path.exists(f"{ACCOUNT_DIR}/id.pub"):
+        return None
+    with open(f"{ACCOUNT_DIR}/id.pub") as f:
+        return {"pubkey": f.read().strip(), **(s.get("ssh") or {})}  # public key + verified login
+
+
+
 def write_view(s):
     act = active_project()
     projects = []
     for name, p in sorted(s["projects"].items(), key=lambda kv: (kv[0] != HOME_PROJECT, kv[0])):
         pub = None
-        if p.get("repo") and p.get("auth") != "token" and os.path.exists(f"{KEYS}/{name}/id.pub"):
+        if p.get("repo") and p.get("auth") == "key" and os.path.exists(f"{KEYS}/{name}/id.pub"):
             with open(f"{KEYS}/{name}/id.pub") as f:
                 pub = f.read().strip()
         repo = p.get("repo")
@@ -907,6 +983,7 @@ def write_view(s):
     tok = s.get("token") if os.path.exists(f"{TOKEN_DIR}/token") else None
     write_json(f"{VIEW}/status.json", {"updated": now(), "editor": "/editor/", "slides": "/slides/",
                                          "token": tok,  # login + expiry only, never the token itself
+                                         "ssh": ssh_view(s),
                                          "claude": ({"saved": (s.get("claude") or {}).get("saved") or int(os.path.getmtime(f"{CLAUDE_DIR}/token"))}
                                                     if os.path.exists(f"{CLAUDE_DIR}/token") else None),
                                          "projects": projects, "shares": shares, "log": s["log"][-60:][::-1]})

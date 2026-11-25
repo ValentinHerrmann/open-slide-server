@@ -26,6 +26,7 @@ main { max-width: 920px; margin: 0 auto; padding: 8px 16px 64px; }
 h2 { font-size: 17px; margin: 28px 0 8px; }
 h3 { font-size: 16px; margin: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 details > h3, #settings h3 { margin: 18px 0 6px; }
+#settings h4 { margin: 14px 0 4px; font-size: 14.5px; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .bad { color: var(--bad); }

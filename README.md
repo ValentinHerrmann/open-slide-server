@@ -15,7 +15,7 @@ present them anywhere, and share single decks with one link. Without handing you
 - **A start page.** All your projects and decks, with one click to edit, view or share.
 - **Published decks.** Presenter view, animations and every other feature, read-only, behind your login.
 - **Share links.** Send one deck to anyone, no account needed. Links expire and can be revoked instantly.
-- **GitHub sync.** Every project is backed up and synced both ways, so collaborators can work on it too. Branches are supported.
+- **GitHub sync.** Every project is backed up and synced both ways, so collaborators can work on it too. Branches are supported. Connect via a fine-grained token, your account's SSH key (also reaches colleagues' repos you collaborate on) or per-repo deploy keys.
 
 Everything runs from one `docker compose` file on your own server and lives under one address:
 
@@ -156,7 +156,7 @@ flowchart TB
     subgraph host ["Docker on your machine"]
         gateway["<b>gateway</b> (Caddy)<br/>routing · strict /share/ match<br/>cross-site guard · static files"]
         admin["<b>admin</b><br/>start page + API<br/><i>can only drop requests</i>"]
-        worker["<b>worker</b><br/>GitHub sync · builds · share links<br/>🔑 GitHub token / deploy keys"]
+        worker["<b>worker</b><br/>GitHub sync · builds · share links<br/>🔑 GitHub token / SSH keys"]
         relay["<b>editor-relay</b><br/>one-way: gateway → editor"]
         editor["<b>editor</b> 🧪 sandbox<br/>open-slide + Claude Code<br/><i>placeholder token only</i>"]
         cproxy["<b>claude-proxy</b><br/>🔑 Claude token<br/>path allowlist"]
@@ -182,7 +182,7 @@ non-root user with a read-only filesystem and no Linux capabilities, and none of
 |---|---|---|---|
 | gateway | nothing secret | admin, editor-relay | no |
 | admin | nothing | only its request folder | no |
-| worker | GitHub token, deploy keys | GitHub | **no** (git hooks off, git dir outside the worktree) |
+| worker | GitHub token, account SSH key, deploy keys (whichever you use) | GitHub | **no** (git hooks off, git dir outside the worktree) |
 | editor | **placeholder** Claude token, one project | claude-proxy, egress-proxy. **Not** the host, LAN, gateway or admin | **yes** |
 | claude-proxy | **Claude token** | api.anthropic.com, allowlisted paths only | no |
 | egress-proxy | nothing | public addresses on ports 80/443; nothing with `EDITOR_INTERNET=off` | no |
