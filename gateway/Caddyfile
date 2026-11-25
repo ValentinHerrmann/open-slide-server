@@ -17,6 +17,11 @@
 
 (editor) {
 	reverse_proxy editor-relay:8080 {
+		# The editor page loads hundreds of files at once (all decks' images). Cap the parallel
+		# connections so they queue here instead of overrunning the relay (one process each).
+		transport http {
+			max_conns_per_host 64
+		}
 		# open-slide accepts edits/agent calls only if Origin == <proto>://<host>: tell it the public ones.
 		header_up X-Forwarded-Proto {$PUBLIC_SCHEME}
 		header_up X-Forwarded-Host {$PUBLIC_HOST}

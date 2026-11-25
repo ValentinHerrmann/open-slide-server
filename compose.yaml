@@ -96,10 +96,12 @@ services:
     <<: *hardened
     image: alpine/socat@sha256:5aa280c6fc5bee94dbd2bbdf2a58d30f50396eaa110be84b03636945b157ae68
     user: "65534:65534"
-    command: ["TCP-LISTEN:8080,fork,reuseaddr", "TCP:editor:8080"]
+    # One process per connection: max-children makes socat wait at the limit instead of failing
+    # (a failed fork kills it, and every restart cut the editor off with 502s and reload loops).
+    command: ["TCP-LISTEN:8080,fork,reuseaddr,max-children=200", "TCP:editor:8080"]
     networks: [sandbox, editor-link]
-    mem_limit: 32m
-    pids_limit: 64
+    mem_limit: 128m
+    pids_limit: 256
 
   claude-proxy:
     # Holds the Claude token. Forwards only Claude API calls, only to api.anthropic.com.
