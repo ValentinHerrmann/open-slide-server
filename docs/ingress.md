@@ -13,6 +13,10 @@ use your Claude subscription, your decks and your GitHub access.
 steps with your host name filled in. Afterwards, check from the outside:
 `sh scripts/test-protection.sh https://your.host`
 
+> **Using Cloudflare (setups A and B): turn off Rocket Loader** for your host (Speed → Optimization →
+> Content Optimization, or a Configuration Rule for just this host). It rewrites the pages' scripts,
+> which breaks the editor (Vite) and the start page: reload loops, broken scripts and wrong redirects.
+
 ---
 
 ## A) Cloudflare Tunnel + Cloudflare Access
