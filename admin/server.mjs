@@ -25,7 +25,7 @@ const FILES = {
 };
 const ACTIONS = new Set(['add_project', 'connect', 'switch', 'sync', 'rebuild', 'set_publish', 'resolve',
   'set_auth', 'set_token', 'remove_token', 'set_claude_token', 'remove_claude_token', 'list_branches', 'switch_branch', 'remove_project', 'create_ssh_key', 'check_ssh_key', 'remove_ssh_key',
-  'share_create', 'share_revoke']);
+  'share_create', 'share_revoke', 'copy_deck']);
 const ID_RE = /^[a-z0-9-]{8,40}$/;
 
 const SEC = {

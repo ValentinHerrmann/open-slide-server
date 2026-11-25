@@ -176,6 +176,33 @@ function shareDialog(p, deck) {
   dlg.showModal();
 }
 
+function copyDialog(p, deck) {
+  const targets = state.projects.filter((q) => q.name !== p.name && (q.state === 'ready' || q.state === 'local'));
+  if (!targets.length) return toast('Add another project first (New project at the top), then copy the deck there.', true);
+  const dlg = $('#copy-dlg');
+  const form = $('#copy-form');
+  form.reset();
+  $('#copy-deck').textContent = deck.title || deck.id;
+  $('#copy-from').textContent = p.name;
+  form.to.replaceChildren(...targets.map((q) => h('option', { value: q.name }, q.repo ? `${q.name} (${q.repo})` : q.name)));
+  form.as.value = deck.id;
+  const label = () => (form.querySelector('button[value=ok]').textContent = form.mode.value === 'move' ? 'Move' : 'Copy');
+  form.onchange = label;
+  label();
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== 'ok') return;
+    const f = new FormData(form);
+    const move = f.get('mode') === 'move';
+    const to = f.get('to');
+    const as = f.get('as').trim();
+    if (move && p.active && !confirm(`${deck.title || deck.id} is in the project open in the editor. Moving deletes it there; unsaved changes in an open editor tab are lost. Continue?`)) return;
+    const out = await request('copy_deck', { name: p.name, deck: deck.id, to, as, move },
+      `${move ? 'Moving' : 'Copying'} ${deck.title || deck.id} to ${to}`);
+    if (out?.ok && out.result.warnings?.length) toast(`Done, but note: ${out.result.warnings.join(' · ')}`, true);
+  };
+  dlg.showModal();
+}
+
 async function branchDialog(p) {
   const out = await request('list_branches', { name: p.name }, `Loading branches of ${p.repo}`);
   if (!out?.ok) return;
@@ -276,7 +303,8 @@ function renderDeck(p, d, ready) {
     h('div', { class: 'deck-actions' },
       ready ? h('button', { class: 'small', onclick: () => openInEditor(p, `s/${encodeURIComponent(d.id)}`) }, 'Edit') : null,
       d.published ? h('a', { class: 'btn small secondary', href: d.published }, 'View') : null,
-      ready ? h('button', { class: 'small secondary', onclick: () => shareDialog(p, d) }, 'Share') : null));
+      ready ? h('button', { class: 'small secondary', onclick: () => shareDialog(p, d) }, 'Share') : null,
+      ready ? h('button', { class: 'small secondary', title: 'Copy or move to another project', onclick: () => copyDialog(p, d) }, 'Copy to…') : null));
 }
 
 function renderProject(p) {

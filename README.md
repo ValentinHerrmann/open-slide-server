@@ -15,6 +15,7 @@ present them anywhere, and share single decks with one link. Without handing you
 - **A start page.** All your projects and decks, with one click to edit, view or share.
 - **Published decks.** Presenter view, animations and every other feature, read-only, behind your login.
 - **Share links.** Send one deck to anyone, no account needed. Links expire and can be revoked instantly.
+- **Copy or move decks between projects.** One click on the start page; the images from the shared `assets/` folder and the deck's theme come along, nothing in the target is overwritten, and both repos are saved to GitHub.
 - **GitHub sync.** Every project is backed up and synced both ways, so collaborators can work on it too. Branches are supported. Connect via a fine-grained token, your account's SSH key (also reaches colleagues' repos you collaborate on) or per-repo deploy keys.
 
 Everything runs from one `docker compose` file on your own server and lives under one address:

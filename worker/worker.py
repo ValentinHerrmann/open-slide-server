@@ -886,13 +886,341 @@ def act_share_revoke(s, a):
     return True, "revoked"
 
 
+# ---------------------------------------------------------------- copy / move a deck between projects
+# Worktrees are written by collaborators and the editor's agent, so every path is opened component by
+# component relative to a directory fd with O_NOFOLLOW: a planted symlink (e.g. assets -> /data/keys)
+# can neither leak a file into another repo nor make the worker write outside a project.
+COPY_MAX_BYTES = 300 * 1024 * 1024
+COPY_MAX_FILES = 5000
+SCAN_MAX_BYTES = 2_000_000
+CODE_EXT = (".tsx", ".ts", ".jsx", ".js", ".mjs", ".css", ".mdx")
+RESOLVE_EXT = ("", ".tsx", ".ts", ".jsx", ".js", "/index.tsx", "/index.ts", "/index.jsx", "/index.js")
+SKIP_TOP = {"node_modules", ".git", ".git-old", "dist", "inbox"}
+ASSET_REF = re.compile(r"""['"`]@assets/([^'"`\n?#]+)""")
+REL_REF = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*|url\(\s*)['"]?(\.\.?/[^'"`\n)?#]+)""")
+BARE_REF = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)['"]([a-z@][^'"\n]*)['"]""")
+THEME_REF = re.compile(r"//\s*<([a-z0-9][a-z0-9-]{0,40})-theme[\s>]")
+
+
+def rel_parts(rel):
+    """Split a project-relative path; None if it leaves the project or touches a skipped top dir."""
+    rel = os.path.normpath(rel)
+    if os.path.isabs(rel) or rel in (".", "") or rel == ".." or rel.startswith("../"):
+        return None
+    parts = rel.split("/")
+    return None if parts[0] in SKIP_TOP or any(p in ("", ".", "..") for p in parts) else parts
+
+
+def open_dir(root, parts, create=False):
+    """fd of root/parts[0]/..., never following symlinks (mkdir on the way if create)."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for p in parts:
+            if create:
+                try:
+                    os.mkdir(p, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            nfd = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def open_file(root, parts):
+    """fd of a regular file root/parts (no symlinks anywhere), or None."""
+    try:
+        d = open_dir(root, parts[:-1])
+    except OSError:
+        return None
+    try:
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=d)
+    except OSError:
+        return None
+    finally:
+        os.close(d)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None
+    return fd
+
+
+def file_digest(root, parts):
+    fd = open_file(root, parts)
+    if fd is None:
+        return None
+    h = hashlib.sha256()
+    with os.fdopen(fd, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def read_text(root, parts):
+    fd = open_file(root, parts)
+    if fd is None:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        return f.read(SCAN_MAX_BYTES).decode("utf-8", "replace")
+
+
+def exists_any(root, parts):
+    try:
+        d = open_dir(root, parts[:-1])
+    except OSError:
+        return False
+    try:
+        os.stat(parts[-1], dir_fd=d, follow_symlinks=False)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(d)
+
+
+def deck_files(root, deck):
+    """Regular files of slides/<deck> as relative part lists (symlinks and special files skipped)."""
+    out = []
+    top = open_dir(root, ["slides", deck])
+    try:
+        for dirpath, dirnames, filenames, dfd in os.fwalk(".", dir_fd=top, follow_symlinks=False):
+            rel = [] if dirpath == "." else os.path.normpath(dirpath).split("/")
+            for fn in filenames:
+                try:
+                    st = os.stat(fn, dir_fd=dfd, follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode):
+                    out.append((rel + [fn], st.st_size))
+    finally:
+        os.close(top)
+    return out
+
+
+def plan_deck_copy(src, deck):
+    """What copying slides/<deck> out of project src needs: its own files, plus files outside the deck
+    that it imports (@assets/..., ../...) and the theme it was built from. Returns
+    (deck_files, needed_extras, optional_extras, bare_packages)."""
+    root = f"{PROJECTS}/{src}"
+    own = deck_files(root, deck)
+    needed, optional, bare = {}, {}, set()
+    queue = [["slides", deck] + parts for parts, _ in own if parts[-1].endswith(CODE_EXT)]
+    seen = set()
+    while queue:
+        parts = queue.pop()
+        key = "/".join(parts)
+        if key in seen or len(seen) > 2000:
+            continue
+        seen.add(key)
+        text = read_text(root, parts)
+        if text is None:
+            continue
+        here = "/".join(parts[:-1])
+        refs = [f"assets/{m}" for m in ASSET_REF.findall(text)]
+        refs += [os.path.join(here, m) for m in REL_REF.findall(text)]
+        for m in BARE_REF.findall(text):
+            if not m.startswith(("@open-slide/", "@assets/", "@/")):
+                bare.add("/".join(m.split("/")[:2]) if m.startswith("@") else m.split("/")[0])
+        for ref in refs:
+            for ext in RESOLVE_EXT:
+                rp = rel_parts(ref + ext)
+                if not rp:
+                    break
+                if rp[:2] == ["slides", deck]:
+                    break  # inside the deck: copied anyway
+                fd = open_file(root, rp)
+                if fd is None:
+                    continue
+                size = os.fstat(fd).st_size
+                os.close(fd)
+                needed["/".join(rp)] = size
+                if rp[-1].endswith(CODE_EXT):
+                    queue.append(rp)
+                break
+        if parts[:2] == ["slides", deck]:
+            for theme in set(THEME_REF.findall(text)):
+                try:
+                    tfd = open_dir(root, ["themes"])
+                except OSError:
+                    break
+                try:
+                    names = [n for n in os.listdir(tfd) if n.startswith(f"{theme}.")]
+                finally:
+                    os.close(tfd)
+                for n in names:
+                    fd = open_file(root, ["themes", n])
+                    if fd is not None:
+                        optional[f"themes/{n}"] = os.fstat(fd).st_size
+                        os.close(fd)
+    return own, needed, optional, bare
+
+
+def write_copy(src_root, src_parts, dst_root, dst_parts):
+    """Copy one regular file; the destination must not exist yet (O_EXCL, no symlinks)."""
+    fd = open_file(src_root, src_parts)
+    if fd is None:
+        raise ValueError(f"{'/'.join(src_parts)} changed while copying")
+    try:
+        d = open_dir(dst_root, dst_parts[:-1], create=True)
+        try:
+            out = os.open(dst_parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=d)
+        finally:
+            os.close(d)
+    except BaseException:
+        os.close(fd)
+        raise
+    with os.fdopen(fd, "rb") as fi, os.fdopen(out, "wb") as fo:
+        shutil.copyfileobj(fi, fo, 1 << 20)
+
+
+def drop_folder_assignment(root, deck):
+    """Best effort: forget the deck's sidebar folder in slides/.folders.json."""
+    try:
+        d = open_dir(root, ["slides"])
+    except OSError:
+        return
+    try:
+        fd = os.open(".folders.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=d)
+        with os.fdopen(fd) as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("assignments"), dict) or deck not in data["assignments"]:
+            return
+        del data["assignments"][deck]
+        tmp = f".folders.json.{secrets.token_hex(4)}"
+        out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=d)
+        with os.fdopen(out, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.rename(tmp, ".folders.json", src_dir_fd=d, dst_dir_fd=d)
+    except (OSError, ValueError):
+        pass
+    finally:
+        os.close(d)
+
+
+def act_copy_deck(s, a):
+    """Copy (or move) a deck into another project on this server, with the shared files it uses.
+    Never overwrites anything in the target; a move deletes the original only after the copy is safe."""
+    src = need_project(s, a)
+    dst = a.get("to")
+    if not (isinstance(dst, str) and dst in s["projects"]) or dst == src:
+        return False, "choose another project as the target"
+    deck, new = a.get("deck"), a.get("as") or a.get("deck")
+    move = bool(a.get("move"))
+    if not (isinstance(deck, str) and deck in [d["id"] for d in decks(src)]):
+        return False, "unknown deck"
+    if not (isinstance(new, str) and DECK_RE.match(new)):
+        return False, "invalid deck name (letters, digits, - and _)"
+    ps, pd = s["projects"][src], s["projects"][dst]
+    if pd.get("state", "local") not in ("ready", "local"):
+        return False, f"{dst} isn't ready (it needs attention on the start page first)"
+    if pd.get("conflict"):
+        return False, f"{dst} has a sync conflict; resolve it first"
+    sroot, droot = f"{PROJECTS}/{src}", f"{PROJECTS}/{dst}"
+    if exists_any(droot, ["slides", new]):
+        return False, f"{dst} already has a deck called {new}: choose another name"
+
+    own, needed, optional, bare = plan_deck_copy(src, deck)
+    total = sum(sz for _, sz in own) + sum(needed.values()) + sum(optional.values())
+    if len(own) + len(needed) + len(optional) > COPY_MAX_FILES or total > COPY_MAX_BYTES:
+        return False, f"deck too large to copy here ({len(own)} files, {total // 1_000_000} MB)"
+    copies, kept, conflicts = [], [], []
+    for rel in sorted(needed):
+        parts = rel.split("/")
+        theirs = file_digest(droot, parts)
+        if theirs is None:
+            if exists_any(droot, parts):
+                conflicts.append(rel)
+            else:
+                copies.append(parts)
+        elif theirs != file_digest(sroot, parts):
+            conflicts.append(rel)
+    if conflicts:
+        return False, (f"{dst} already has different files at {', '.join(conflicts[:5])}"
+                       f"{' …' if len(conflicts) > 5 else ''}, which this deck uses. Nothing was copied; "
+                       "rename or remove them there first.")
+    for rel in sorted(optional):  # a theme the target already has (maybe newer) is left alone
+        (kept if exists_any(droot, rel.split("/")) else copies).append(rel.split("/"))
+
+    written = []
+    try:
+        for parts, _ in own:
+            write_copy(sroot, ["slides", deck] + parts, droot, ["slides", new] + parts)
+            written.append(["slides", new] + parts)
+        for parts in copies:
+            write_copy(sroot, parts, droot, parts)
+            written.append(parts)
+    except (OSError, ValueError) as e:
+        try:  # roll back: the target gets all of it or nothing
+            d = open_dir(droot, ["slides"])
+            try:
+                shutil.rmtree(new, dir_fd=d)
+            finally:
+                os.close(d)
+        except OSError:
+            pass
+        for parts in written:
+            if parts[:2] != ["slides", new]:
+                try:
+                    d = open_dir(droot, parts[:-1])
+                    try:
+                        os.unlink(parts[-1], dir_fd=d)
+                    finally:
+                        os.close(d)
+                except OSError:
+                    pass
+        if isinstance(e, OSError) and e.errno in (20, 40):  # ENOTDIR / ELOOP: a symlink where a folder belongs
+            e = f"{e.filename or 'a path'} in {dst} is a link or a file, not a folder"
+        return False, f"copying failed, nothing was changed in {dst}: {e}"
+
+    extra = ["/".join(p) for p in copies]
+    log(s, f"deck {deck} {'moved' if move else 'copied'} here from {src}" + (f" as {new}" if new != deck else "")
+        + (f" (with {', '.join(extra[:6])}{' …' if len(extra) > 6 else ''})" if extra else ""), dst)
+    warnings = []
+    missing = sorted(b for b in bare if not os.path.isdir(f"{droot}/node_modules/{b}"))
+    if missing:
+        warnings.append(f"the deck uses package(s) {', '.join(missing)}, which {dst} doesn't have installed: "
+                        "add them to its package.json")
+    if kept:
+        warnings.append(f"{dst} already had {', '.join('/'.join(p) for p in kept)}; kept its version")
+
+    if pd.get("repo") and pd.get("state") == "ready":
+        sync_project(s, dst)
+        if (pd.get("last_sync") or {}).get("result") != "ok":
+            build_all(s, {dst})
+            detail = (pd.get("last_sync") or {}).get("detail", "")
+            msg = f"copied into {dst}, but saving it to GitHub failed ({detail}); it is retried automatically"
+            if move:
+                return False, msg + f". The original in {src} was kept: delete it there once {dst} is saved"
+            warnings.append(msg)
+
+    if move:
+        d = open_dir(sroot, ["slides"])
+        try:
+            shutil.rmtree(deck, dir_fd=d)
+        finally:
+            os.close(d)
+        drop_folder_assignment(sroot, deck)
+        for sh in s["shares"].values():
+            if sh["project"] == src and sh["deck"] == deck:
+                sh.update(project=dst, deck=new)
+        log(s, f"deck {deck} moved to {dst}" + (f" (as {new})" if new != deck else ""), src)
+        if ps.get("repo") and ps.get("state") == "ready":
+            sync_project(s, src)
+    build_all(s, {src, dst} if move else {dst})
+    return True, {"deck": new, "to": dst, "files": len(written), "extras": extra, "warnings": warnings}
+
+
 ACTIONS = {"add_project": act_add_project, "connect": act_connect, "switch": act_switch, "sync": act_sync,
            "set_auth": act_set_auth, "set_token": act_set_token, "remove_token": act_remove_token,
            "create_ssh_key": act_create_ssh_key, "check_ssh_key": act_check_ssh_key, "remove_ssh_key": act_remove_ssh_key,
            "set_claude_token": act_set_claude_token, "remove_claude_token": act_remove_claude_token,
            "rebuild": act_rebuild, "set_publish": act_set_publish, "resolve": act_resolve,
            "remove_project": act_remove_project, "list_branches": act_list_branches, "switch_branch": act_switch_branch,
-           "share_create": act_share_create, "share_revoke": act_share_revoke}
+           "share_create": act_share_create, "share_revoke": act_share_revoke, "copy_deck": act_copy_deck}
 
 
 def apply_requests(s):

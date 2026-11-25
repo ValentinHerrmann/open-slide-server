@@ -98,6 +98,23 @@
   </form>
 </dialog>
 
+<dialog id="copy-dlg">
+  <form method="dialog" id="copy-form">
+    <h3>Copy “<span id="copy-deck"></span>” to another project</h3>
+    <p class="muted small">From <b id="copy-from"></b>. Images from the shared <code>assets/</code> folder and the deck’s theme come along. Nothing in the target is overwritten, and both projects are saved to GitHub.</p>
+    <label>Target project <select name="to" required></select></label>
+    <label>Name in the target <input name="as" required maxlength="64" pattern="[A-Za-z0-9_\-]+" autocomplete="off"></label>
+    <fieldset>
+      <legend>Keep the original?</legend>
+      <label class="choice"><input type="radio" name="mode" value="copy" checked>
+        <span><b>Copy</b><br><span class="muted small">The deck stays here too; the two copies are independent from now on.</span></span></label>
+      <label class="choice"><input type="radio" name="mode" value="move">
+        <span><b>Move</b><br><span class="muted small">Deleted here once it is safely in the target. Share links follow it.</span></span></label>
+    </fieldset>
+    <div class="row end"><button value="cancel" formnovalidate class="secondary">Cancel</button><button value="ok">Copy</button></div>
+  </form>
+</dialog>
+
 <dialog id="branch-dlg">
   <form method="dialog" id="branch-form">
     <h3>Branch of <span id="branch-project"></span></h3>
