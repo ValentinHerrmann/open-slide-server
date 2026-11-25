@@ -76,7 +76,10 @@ const server = http.createServer(async (req, res) => {
     const m = p.match(/^\/api\/result\/([a-z0-9-]+)$/);
     if (req.method === 'GET' && m && ID_RE.test(m[1])) {
       const data = await readFile(path.join(VIEW, 'results', `${m[1]}.json`)).catch(() => null);
-      return data ? send(res, 200, data) : send(res, 202, { pending: true });
+      if (data) return send(res, 200, data);
+      // Not done yet: which step the worker is on (no file yet = still queued behind other work).
+      const prog = await readFile(path.join(VIEW, 'results', `${m[1]}.progress.json`)).then(JSON.parse).catch(() => null);
+      return send(res, 202, { pending: true, step: typeof prog?.msg === 'string' ? prog.msg : null });
     }
 
     if (req.method === 'POST' && p === '/api/request') {

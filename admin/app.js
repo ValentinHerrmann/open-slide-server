@@ -35,20 +35,43 @@ const until = (t) => {
   return s < 86400 ? `expires in ${Math.max(1, Math.round(s / 3600))} h` : `expires in ${Math.round(s / 86400)} days`;
 };
 
-function toast(msg, bad = false) {
+// Results and errors. Errors stay until closed; everything else disappears after a few seconds.
+function toast(msg, bad = false, sticky = bad) {
   const t = $('#toast');
-  t.textContent = msg;
+  $('#toast-msg').textContent = msg;
   t.className = bad ? 'bad' : '';
   t.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.hidden = true), bad ? 12000 : 5000);
+  if (!sticky) toast.timer = setTimeout(() => (t.hidden = true), 6000);
 }
+$('#toast-close').addEventListener('click', () => ($('#toast').hidden = true));
+
+// The running action: stays visible from the click until the server's answer, with the step the
+// server is on and the elapsed time, so a long copy or build never looks finished or stuck.
+const progress = {
+  show(label) {
+    this.started = Date.now();
+    $('#progress-label').textContent = `${label}…`;
+    this.step('Sending to the server');
+    this.tick();
+    clearInterval(this.timer);
+    this.timer = setInterval(() => this.tick(), 1000);
+    $('#toast').hidden = true;
+    $('#progress').hidden = false;
+  },
+  step(text) { $('#progress-step').textContent = text; },
+  tick() {
+    const s = Math.floor((Date.now() - this.started) / 1000);
+    $('#progress-time').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  },
+  hide() { clearInterval(this.timer); $('#progress').hidden = true; },
+};
 
 async function request(action, args, label) {
-  if (busy) return toast('Another action is still running…', true);
+  if (busy) return toast('Please wait until the running action (shown above) has finished.', false);
   busy = true;
   document.body.classList.add('busy');
-  toast(`${label}…`);
+  progress.show(label);
   try {
     const r = await fetch(`${API}/request`, {
       method: 'POST',
@@ -57,21 +80,29 @@ async function request(action, args, label) {
     });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
     const { id } = await r.json();
-    for (let i = 0; i < 600; i++) {
+    for (let i = 0; i < 1800; i++) {
       await sleep(1000);
-      const res = await fetch(`${API}/result/${id}`);
-      if (res.status === 200) {
+      const res = await fetch(`${API}/result/${id}`).catch(() => null);
+      if (res?.status === 202) {
+        const p = await res.json().catch(() => ({}));
+        progress.step(p.step ? `${p.step}…` : 'Waiting for the server: it is finishing other work first (e.g. the regular GitHub sync)');
+      }
+      if (res?.status === 200) {
         const out = await res.json();
+        progress.hide();
         await load(true);
         if (!out.ok) toast(`${label} failed: ${typeof out.result === 'string' ? out.result : JSON.stringify(out.result)}`, true);
+        else if (out.warning) toast(`${label}: done, but ${out.warning}.`, true);
         else toast(`${label}: done`);
         return out;
       }
     }
-    throw new Error('timed out waiting for the server');
+    throw new Error('no answer from the server after 30 minutes; check Activity at the bottom');
   } catch (e) {
+    progress.hide();
     toast(`${label} failed: ${e.message}`, true);
   } finally {
+    progress.hide();
     busy = false;
     document.body.classList.remove('busy');
   }
@@ -91,13 +122,18 @@ async function openInEditor(p, path = '') {
   if (p.active) return void (location.href = `/editor/${path}`);
   const out = await request('switch', { name: p.name }, `Opening ${p.name} in the editor`);
   if (!out?.ok) return;
-  toast('Starting the editor…');
+  progress.show(`Opening ${p.name} in the editor`);
+  progress.step('The editor is restarting with this project');
   await sleep(3000);
   for (let i = 0; i < 60; i++) {
     const r = await fetch('/editor/', { cache: 'no-store' }).catch(() => null);
-    if (r?.ok) return void (location.href = `/editor/${path}`);
+    if (r?.ok) {
+      progress.step('Editor ready, loading it');
+      return void (location.href = `/editor/${path}`);
+    }
     await sleep(1000);
   }
+  progress.hide();
   toast('The editor takes unusually long to start; try the Editor button in a moment.', true);
 }
 
@@ -198,7 +234,8 @@ function copyDialog(p, deck) {
     if (move && p.active && !confirm(`${deck.title || deck.id} is in the project open in the editor. Moving deletes it there; unsaved changes in an open editor tab are lost. Continue?`)) return;
     const out = await request('copy_deck', { name: p.name, deck: deck.id, to, as, move },
       `${move ? 'Moving' : 'Copying'} ${deck.title || deck.id} to ${to}`);
-    if (out?.ok && out.result.warnings?.length) toast(`Done, but note: ${out.result.warnings.join(' · ')}`, true);
+    const notes = [...(out?.result?.warnings || []), ...(out?.warning ? [out.warning] : [])];
+    if (out?.ok && notes.length) toast(`Done, but note: ${notes.join(' · ')}`, true);
   };
   dlg.showModal();
 }
@@ -437,7 +474,7 @@ function render() {
 
 async function load(force = false) {
   const r = await fetch(`${API}/status`, { cache: 'no-store' }).catch(() => null);
-  if (!r?.ok) return toast('The server is starting up…', true);
+  if (!r?.ok) return toast('The server is starting up…', true, false);
   state = await r.json();
   const typing = document.activeElement?.matches('input,select');
   if (force || (!document.querySelector('dialog[open]') && !typing)) render();

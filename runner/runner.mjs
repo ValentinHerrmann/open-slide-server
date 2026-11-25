@@ -33,7 +33,9 @@ function run(cmd, args, env, timeoutS) {
     cwd: '/tmp', env: { PATH: process.env.PATH, HOME: '/tmp', ...env },
     encoding: 'utf8', timeout: timeoutS * 1000, maxBuffer: 16 << 20,
   });
-  const out = `${r.stdout || ''}${r.stderr || ''}`.trim().split('\n').slice(-4).join(' | ').slice(-600);
+  // Last lines without stack frames: the error message itself, not where in Vite it was thrown.
+  const lines = `${r.stdout || ''}${r.stderr || ''}`.trim().split('\n').filter((l) => !/^\s+at\s/.test(l));
+  const out = lines.slice(-6).join(' | ').slice(-600);
   return { ok: r.status === 0, code: r.status, out: r.error ? `${r.error.message} ${out}` : out };
 }
 

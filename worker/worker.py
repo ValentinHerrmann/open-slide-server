@@ -103,6 +103,18 @@ def write_json(path, data, mode=0o644):
     os.replace(tmp, path)
 
 
+CURRENT = {"rid": None, "failed_builds": set()}  # the UI request being handled: progress + build failures
+
+
+def progress(msg):
+    """Tell the UI which step the current request is on (shown until the result arrives)."""
+    if CURRENT["rid"]:
+        try:
+            write_json(f"{VIEW}/results/{CURRENT['rid']}.progress.json", {"msg": msg[:200], "t": now()})
+        except OSError:
+            pass
+
+
 def log(s, msg, project=None, level="info"):
     print(f"[{level}] {project + ': ' if project else ''}{msg}", flush=True)
     s["log"].append({"t": now(), "level": level, "project": project, "msg": msg[:500]})
@@ -175,6 +187,7 @@ def run_job(kind, name, payload, timeout):
 
 
 def npm_install(s, name, skills=False):
+    progress(f"Installing the dependencies of {name} (takes about a minute)")
     r = run_job("deps", name, {"skills": skills}, timeout=1200)
     if not r.get("ok"):
         log(s, f"npm install failed: {r.get('out', '?')}", name, "error")
@@ -415,6 +428,7 @@ def sync_project(s, name):
     p = s["projects"][name]
     if p.get("state") != "ready" or not p.get("repo") or p.get("conflict"):
         return
+    progress(f"Saving {name} to GitHub")
     code, detail = git_sync(name, "sync", p)
     p["last_sync"] = {"t": now(), "result": code, "detail": detail}
     if code == "conflict":
@@ -503,6 +517,7 @@ def build_all(s, only=None):
     changed = False
     for name, items in todo.items():
         job = {"targets": [{"key": k, "base": t["base"], "deck": t["deck"], "browser": t["browser"]} for k, t in items]}
+        progress(f"Building the published version of {name} ({len(items)} build{'s' if len(items) > 1 else ''}, about a minute each)")
         r = run_job("build", name, job, timeout=600 + 300 * len(items))
         results = {x.get("key"): x for x in r.get("results", []) if isinstance(x, dict)}
         for key, t in items:
@@ -510,6 +525,7 @@ def build_all(s, only=None):
             src = f"{JOBS}/build/out/{key}"
             if not res.get("ok") or not os.path.isfile(f"{src}/index.html") or os.path.islink(src):
                 s["projects"][name]["last_build"] = {"t": now(), "ok": False, "detail": str(res.get("out", ""))[-400:]}
+                CURRENT["failed_builds"].add(name)
                 log(s, f"build {key} failed: {str(res.get('out', ''))[-300:]}", name, "error")
                 continue
             out = f"{BUILDS}/{key}-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
@@ -1000,15 +1016,11 @@ def deck_files(root, deck):
     return out
 
 
-def plan_deck_copy(src, deck):
-    """What copying slides/<deck> out of project src needs: its own files, plus files outside the deck
-    that it imports (@assets/..., ../...) and the theme it was built from. Returns
-    (deck_files, needed_extras, optional_extras, bare_packages)."""
-    root = f"{PROJECTS}/{src}"
-    own = deck_files(root, deck)
-    needed, optional, bare = {}, {}, set()
-    queue = [["slides", deck] + parts for parts, _ in own if parts[-1].endswith(CODE_EXT)]
-    seen = set()
+def scan_imports(root, start, deck):
+    """Follow the imports of the code files in start (part lists) to files outside slides/<deck>:
+    @assets/..., relative paths (recursively through code). Returns ({path: size}, bare_packages, themes)."""
+    needed, bare, themes, seen = {}, set(), set(), set()
+    queue = list(start)
     while queue:
         parts = queue.pop()
         key = "/".join(parts)
@@ -1018,6 +1030,8 @@ def plan_deck_copy(src, deck):
         text = read_text(root, parts)
         if text is None:
             continue
+        if parts[:2] == ["slides", deck]:
+            themes.update(THEME_REF.findall(text))
         here = "/".join(parts[:-1])
         refs = [f"assets/{m}" for m in ASSET_REF.findall(text)]
         refs += [os.path.join(here, m) for m in REL_REF.findall(text)]
@@ -1027,10 +1041,8 @@ def plan_deck_copy(src, deck):
         for ref in refs:
             for ext in RESOLVE_EXT:
                 rp = rel_parts(ref + ext)
-                if not rp:
-                    break
-                if rp[:2] == ["slides", deck]:
-                    break  # inside the deck: copied anyway
+                if not rp or rp[:2] == ["slides", deck]:
+                    break  # outside the project, or inside the deck (copied anyway)
                 fd = open_file(root, rp)
                 if fd is None:
                     continue
@@ -1040,22 +1052,37 @@ def plan_deck_copy(src, deck):
                 if rp[-1].endswith(CODE_EXT):
                     queue.append(rp)
                 break
-        if parts[:2] == ["slides", deck]:
-            for theme in set(THEME_REF.findall(text)):
-                try:
-                    tfd = open_dir(root, ["themes"])
-                except OSError:
-                    break
-                try:
-                    names = [n for n in os.listdir(tfd) if n.startswith(f"{theme}.")]
-                finally:
-                    os.close(tfd)
-                for n in names:
-                    fd = open_file(root, ["themes", n])
-                    if fd is not None:
-                        optional[f"themes/{n}"] = os.fstat(fd).st_size
-                        os.close(fd)
-    return own, needed, optional, bare
+    return needed, bare, themes
+
+
+def plan_deck_copy(src, deck):
+    """What copying slides/<deck> out of project src needs. Returns (deck_files, needed, themes, bare):
+    needed = files outside the deck it imports; themes = {theme file: (size, files it imports)},
+    for the theme(s) the deck was built from (copied only if the target doesn't have them)."""
+    root = f"{PROJECTS}/{src}"
+    own = deck_files(root, deck)
+    needed, bare, names = scan_imports(root, [["slides", deck] + p for p, _ in own if p[-1].endswith(CODE_EXT)], deck)
+    themes = {}
+    for theme in names:
+        try:
+            tfd = open_dir(root, ["themes"])
+        except OSError:
+            break
+        try:
+            files = sorted(n for n in os.listdir(tfd) if n.startswith(f"{theme}."))
+        finally:
+            os.close(tfd)
+        for n in files:
+            fd = open_file(root, ["themes", n])
+            if fd is None:
+                continue
+            size = os.fstat(fd).st_size
+            os.close(fd)
+            # A theme file in themes/ is built for the whole project, so whatever it imports must come too.
+            deps, more, _ = scan_imports(root, [["themes", n]] if n.endswith(CODE_EXT) else [], deck)
+            bare |= more
+            themes[f"themes/{n}"] = (size, deps)
+    return own, needed, themes, bare
 
 
 def write_copy(src_root, src_parts, dst_root, dst_parts):
@@ -1123,11 +1150,20 @@ def act_copy_deck(s, a):
     if exists_any(droot, ["slides", new]):
         return False, f"{dst} already has a deck called {new}: choose another name"
 
-    own, needed, optional, bare = plan_deck_copy(src, deck)
-    total = sum(sz for _, sz in own) + sum(needed.values()) + sum(optional.values())
-    if len(own) + len(needed) + len(optional) > COPY_MAX_FILES or total > COPY_MAX_BYTES:
+    progress("Checking which files the deck needs")
+    own, needed, themes, bare = plan_deck_copy(src, deck)
+    copies, kept, theme_bytes = [], [], 0
+    for rel, (size, deps) in sorted(themes.items()):  # a theme the target already has (maybe newer) is left alone
+        if exists_any(droot, rel.split("/")):
+            kept.append(rel)
+        else:
+            copies.append(rel.split("/"))
+            theme_bytes += size
+            needed.update(deps)
+    total = sum(sz for _, sz in own) + sum(needed.values()) + theme_bytes
+    if len(own) + len(needed) + len(copies) > COPY_MAX_FILES or total > COPY_MAX_BYTES:
         return False, f"deck too large to copy here ({len(own)} files, {total // 1_000_000} MB)"
-    copies, kept, conflicts = [], [], []
+    conflicts = []
     for rel in sorted(needed):
         parts = rel.split("/")
         theirs = file_digest(droot, parts)
@@ -1142,9 +1178,8 @@ def act_copy_deck(s, a):
         return False, (f"{dst} already has different files at {', '.join(conflicts[:5])}"
                        f"{' …' if len(conflicts) > 5 else ''}, which this deck uses. Nothing was copied; "
                        "rename or remove them there first.")
-    for rel in sorted(optional):  # a theme the target already has (maybe newer) is left alone
-        (kept if exists_any(droot, rel.split("/")) else copies).append(rel.split("/"))
 
+    progress(f"Copying {len(own) + len(copies)} files to {dst}")
     written = []
     try:
         for parts, _ in own:
@@ -1185,7 +1220,7 @@ def act_copy_deck(s, a):
         warnings.append(f"the deck uses package(s) {', '.join(missing)}, which {dst} doesn't have installed: "
                         "add them to its package.json")
     if kept:
-        warnings.append(f"{dst} already had {', '.join('/'.join(p) for p in kept)}; kept its version")
+        warnings.append(f"{dst} already had {', '.join(kept)}; kept its version")
 
     if pd.get("repo") and pd.get("state") == "ready":
         sync_project(s, dst)
@@ -1198,6 +1233,7 @@ def act_copy_deck(s, a):
             warnings.append(msg)
 
     if move:
+        progress(f"Removing the original from {src}")
         d = open_dir(sroot, ["slides"])
         try:
             shutil.rmtree(deck, dir_fd=d)
@@ -1257,6 +1293,9 @@ def apply_requests(s):
         if action not in ACTIONS:
             ok, res = False, "unknown action"
         else:
+            CURRENT["rid"] = rid
+            CURRENT["failed_builds"] = set()
+            progress("Working on it")
             try:
                 ok, res = ACTIONS[action](s, args)
             except ValueError as e:
@@ -1264,7 +1303,16 @@ def apply_requests(s):
             except Exception as e:  # never leave the UI waiting
                 ok, res = False, f"internal error: {e}"
                 log(s, f"{action} failed: {e}", level="error")
-        write_json(f"{VIEW}/results/{rid}.json", {"ok": ok, "result": res, "t": now()})
+        CURRENT["rid"] = None
+        out = {"ok": ok, "result": res, "t": now()}
+        if CURRENT["failed_builds"]:  # the action itself may be fine, but say so instead of a plain "done"
+            out["warning"] = (f"the published version of {', '.join(sorted(CURRENT['failed_builds']))} failed to build, "
+                              "so the public pages still show the previous version (details under Activity)")
+        write_json(f"{VIEW}/results/{rid}.json", out)
+        try:
+            os.unlink(f"{VIEW}/results/{rid}.progress.json")
+        except FileNotFoundError:
+            pass
         save(s)
         write_view(s)
     for fn in os.listdir(f"{VIEW}/results"):

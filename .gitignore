@@ -3,3 +3,4 @@ secrets/
 compose.override.yaml
 data/
 protect/
+__pycache__/

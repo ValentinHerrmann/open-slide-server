@@ -21,7 +21,12 @@
   <span id="updated" class="muted small"></span>
 </header>
 <main>
-  <div id="toast" role="status" hidden></div>
+  <div id="progress" role="status" aria-live="polite" hidden>
+    <span class="spinner" aria-hidden="true"></span>
+    <div class="grow"><b id="progress-label"></b><div id="progress-step" class="small"></div></div>
+    <span id="progress-time" class="small"></span>
+  </div>
+  <div id="toast" role="status" hidden><span id="toast-msg"></span><button type="button" id="toast-close" class="link" aria-label="Close">✕</button></div>
 
   <section id="setup" hidden></section>
 

@@ -79,7 +79,17 @@ details.more[open] { flex-basis: 100%; }
 #log li { padding: 3px 0; border-bottom: 1px solid var(--line); }
 #log li.error { color: var(--bad); }
 #log li.warn { color: var(--warn); }
-#toast { position: sticky; top: 58px; z-index: 5; margin: 10px 0; padding: 10px 14px; border-radius: 10px; background: var(--ok-bg); color: var(--ok); border: 1px solid var(--line); }
+#toast { position: sticky; top: 58px; z-index: 5; margin: 10px 0; padding: 10px 14px; border-radius: 10px; background: var(--ok-bg); color: var(--ok); border: 1px solid var(--line); display: flex; gap: 12px; align-items: flex-start; }
+#toast[hidden], #progress[hidden] { display: none; }
+#toast-msg { flex: 1; }
+#toast-close { color: inherit; text-decoration: none; opacity: 1 !important; }
+#progress { position: sticky; top: 58px; z-index: 6; margin: 10px 0; padding: 10px 14px; border-radius: 10px; background: var(--warn-bg); color: var(--fg); border: 1px solid var(--line); display: flex; gap: 12px; align-items: center; }
+#progress .grow { flex: 1; min-width: 0; }
+#progress-step, #progress-time { color: var(--muted); }
+#progress-time { font-variant-numeric: tabular-nums; }
+.spinner { width: 18px; height: 18px; flex-shrink: 0; border-radius: 50%; border: 2.5px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
 #toast.bad { background: var(--bad-bg); color: var(--bad); }
 @media (max-width: 640px) {
   ul.decks li, ul.shares li { flex-direction: column; align-items: flex-start; }
