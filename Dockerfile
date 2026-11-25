@@ -1,15 +1,17 @@
 # syntax=docker/dockerfile:1
 # Two images:
-#   gateway: stock Caddy        -> services "gateway" and "claude-proxy"
+#   gateway: stock Caddy + Squid -> services "gateway", "claude-proxy" and "egress-proxy"
 #   app:     Node + Claude Code CLI + git + python -> "editor", "admin", "worker", "builder", "deps"
 # All code of this repo is baked in (read-only at runtime); data lives in ./data.
 
 FROM caddy:2.11.4@sha256:0c994536bddb66445885237f1a5dcc1916bccea922661c76b4e9fc24061f9b52 AS gateway
 # The official binary carries a file capability (bind :80). We listen on 8080 and run with
 # no-new-privileges + no capabilities, where such a binary can't be executed: copy it to drop it.
-RUN cp /usr/bin/caddy /usr/bin/caddy.new && mv /usr/bin/caddy.new /usr/bin/caddy
+RUN cp /usr/bin/caddy /usr/bin/caddy.new && mv /usr/bin/caddy.new /usr/bin/caddy \
+ && apk add --no-cache squid
 COPY gateway/ /etc/open-slide/gateway/
 COPY proxy/ /etc/open-slide/proxy/
+COPY egress/ /etc/open-slide/egress/
 ENV XDG_DATA_HOME=/tmp XDG_CONFIG_HOME=/tmp
 ENTRYPOINT ["/bin/sh", "/etc/open-slide/gateway/entrypoint.sh"]
 

@@ -48,7 +48,7 @@ docker run --rm -v "$PWD/data:/data" --user 0 --network none --entrypoint sh \
 	touch control/generation
 	chown -R 1000:1000 /data
 	chown -h 1000:1000 active build-src deps-src
-	chmod 700 keys state/requests claude'
+	chmod 700 keys state/requests claude claude-pki'
 
 # ---- start ------------------------------------------------------------------------------------
 say "Starting"

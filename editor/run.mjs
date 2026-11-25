@@ -30,6 +30,9 @@ try {
   writeFileSync('/home/node/.claude/CLAUDE.md', readFileSync('/opt/open-slide/editor/CLAUDE.md'));
 } catch (e) { console.log(`could not write ~/.claude/CLAUDE.md: ${e.message}`); }
 
+// Claude Code trusts claude-proxy's CA (NODE_EXTRA_CA_CERTS); give the proxy a moment to publish it.
+for (let i = 0; i < 60 && !existsSync('/claude-ca/claude-ca.crt'); i++) await new Promise((r) => setTimeout(r, 1000));
+
 const ready = existsSync('/workspace/package.json') && existsSync('/workspace/node_modules/@open-slide/core');
 
 if (ready) {

@@ -63,4 +63,4 @@ Open your URL. The start page shows your projects with their decks, your share l
 
 - Upload images, videos, fonts and other files with the **asset panel** in the editor (25 MB per file, per deck or global `assets/`).
 - These files are part of the repo, so they are committed and pushed to GitHub. Don't upload confidential material into a project that syncs to a shared repo.
-- The agent has **no internet access**: it can't open URLs or download files. **Web search works**, because it runs on Anthropic's side, but the agent only gets the results, not full pages. To show it a web page, paste the text or save the page as PDF and upload it.
+- The agent can **search the web** and, with `EDITOR_INTERNET=on` (the default), **open URLs**, use MCP servers and install packages, all through a filtering proxy that never reaches your host or local network. With `EDITOR_INTERNET=off` it can only search. Then paste a page's text or upload it as PDF instead.

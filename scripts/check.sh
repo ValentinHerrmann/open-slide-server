@@ -15,7 +15,7 @@ expect() { # expect <description> <wanted> <got>
 }
 code() { curl -s -o /dev/null -w '%{http_code}' -H "Host: $HOST" "$@"; }
 G="http://$BIND:$PORT"
-ed() { docker compose exec -T editor node -e "$1" 2>&1; }
+ed() { docker compose exec -T -e NODE_NO_WARNINGS=1 editor node -e "$1" 2>&1; }
 
 echo "Gateway (local; login is up to your reverse proxy)"
 expect "unknown share link" 404 "$(code "$G/share/AAAAAAAAAAAAAAAAAAAAAA/")"
@@ -26,9 +26,17 @@ expect "cross-site POST to the API" 403 "$(code -X POST -H 'Sec-Fetch-Site: cros
 expect "unknown host name" 421 "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$G/")"
 
 echo "Editor sandbox (runs code from your repos)"
-r=$(ed 'fetch("https://example.com").then(r=>console.log("REACHED "+r.status)).catch(e=>console.log("blocked"))')
-expect "no internet" blocked "$r"
-r=$(ed 'const s=require("net").connect({host:"1.1.1.1",port:443,timeout:3000});s.on("connect",()=>{console.log("REACHED");process.exit()});s.on("timeout",()=>{console.log("blocked");process.exit()});s.on("error",()=>console.log("blocked"))')
+if [ "${EDITOR_INTERNET:-on}" = off ]; then
+	r=$(ed 'fetch("https://example.com").then(r=>console.log("REACHED "+r.status)).catch(e=>console.log("blocked"))')
+	expect "no internet (EDITOR_INTERNET=off)" blocked "$r"
+else
+	r=$(ed 'fetch("https://example.com").then(r=>console.log("reachable")).catch(e=>console.log("blocked"))')
+	expect "internet via the filtering proxy (EDITOR_INTERNET=on)" reachable "$r"
+fi
+for ip in 172.17.0.1 169.254.169.254 10.0.0.1 192.168.1.1; do
+	r=$(ed 'fetch("http://'$ip'/").then(r=>console.log("REACHED "+r.status)).catch(e=>console.log("blocked"))')
+	expect "private address $ip unreachable" blocked "$r"
+done
 expect "no direct IP access" blocked "$r"
 r=$(ed 'fetch("http://gateway:8080/api/status").then(r=>console.log("REACHED "+r.status)).catch(e=>console.log("blocked"))')
 expect "editor can't reach the gateway / start page" blocked "$r"

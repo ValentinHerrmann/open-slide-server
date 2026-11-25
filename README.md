@@ -104,7 +104,8 @@ If it reports **OPEN**, stop the stack right away (`docker compose stop`) and fi
 |---|---|---|---|
 | gateway | nothing secret | the only published port (127.0.0.1) | no |
 | editor-relay | nothing | forwards gateway → editor only | no |
-| editor | **placeholder** Claude token | sandbox network: no internet, no host, no gateway/admin; only claude-proxy | **yes** (Vite config, decks, agent tools) |
+| editor | **placeholder** Claude token | sandbox network: no host, no gateway/admin; Anthropic only via claude-proxy; web only via egress-proxy (`EDITOR_INTERNET`) | **yes** (Vite config, decks, agent tools) |
+| egress-proxy | nothing | public web addresses only (ports 80/443), never private ones; off with `EDITOR_INTERNET=off` | no |
 | claude-proxy | your Claude token | Anthropic API only, fixed paths | no |
 | admin | nothing | gateway only | no |
 | worker | GitHub token, deploy keys | GitHub | no (git hooks off, git dir outside the worktree) |
@@ -118,14 +119,17 @@ If it reports **OPEN**, stop the stack right away (`docker compose stop`) and fi
 
 **Claude token:**
 - It exists only in `data/claude/token`, which only the claude-proxy container mounts. It is saved through the start page and never shown again.
-- The editor sends Claude API calls to the proxy with a placeholder, and the proxy swaps in the token. It forwards only Claude API paths to `api.anthropic.com`, so it can't be used to send data elsewhere.
-- The editor has no other way out: an internal Docker network, with no IP for the host on that bridge.
+- Inside the editor, `api.anthropic.com` *is* the proxy: a network alias, trusted through the proxy's own CA certificate (its key stays in the proxy). So every Claude Code call (chat, account policy, web-fetch checks) reaches the proxy with a placeholder, and the proxy swaps in the token.
+- It forwards only an allowlist of Anthropic API paths. Endpoints that would turn the token into another credential (creating API keys, refreshing OAuth tokens) are refused.
+- The editor has no direct network route at all (internal Docker network, no IP for the host on that bridge): only claude-proxy and, if enabled, egress-proxy.
 - The token never reaches a browser.
 
 **Repos you open:**
 - An open-slide project is code: its Vite config, its decks, its `.claude/settings.json` hooks. All of it runs in the editor or builder sandbox.
-- It **cannot** read your Claude or GitHub credentials, reach the internet, see your other projects (the editor and builder only ever mount one project), or reach host services.
+- It **cannot** read your Claude or GitHub credentials, see your other projects (the editor and builder only ever mount one project), or reach your host or local network.
 - It **can**:
+  - with `EDITOR_INTERNET=on` (default, needed for web fetch, MCP servers, plugins, `npm install`): reach the internet, so it could send the open project's contents out
+
   - change the project's files (visible in git history)
   - use your Claude quota
   - act through the start page while you have the editor open in your browser, because decks run as JavaScript on the same site

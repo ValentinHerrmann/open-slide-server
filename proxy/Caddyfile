@@ -1,14 +1,25 @@
 # claude-proxy: the ONLY container that can read the Claude token (/secrets/token = data/claude/token,
-# saved via the start page; read on every request, so a new token works without a restart). The editor sends Claude API calls here with a placeholder token; this
-# replaces it and forwards to api.anthropic.com. Fixed upstream and a path allowlist, so it is
-# not a general proxy and can't be used to send data anywhere else.
+# saved on the start page; read on every request, so a new token works without a restart).
+#
+# In the editor, the name api.anthropic.com points here (network alias), and the editor trusts this
+# proxy's own small CA (only its certificate is shared, never its key). So every call Claude Code makes
+# to Anthropic - chat, account policy, web-fetch checks - arrives here with a placeholder token; this
+# swaps in the real one and forwards to the real api.anthropic.com.
+# Only the paths below are forwarded. Endpoints that hand out credentials (e.g. creating API keys,
+# refreshing OAuth tokens) are refused, so the token can't be turned into another secret.
 {
 	admin off
-	auto_https off
 	persist_config off
+	skip_install_trust
+	auto_https disable_redirects
+	pki {
+		ca local {
+			name "open-slide claude-proxy"
+		}
+	}
 }
 
-:8080 {
+(claude) {
 	log {
 		output stdout
 		format filter {
@@ -19,11 +30,15 @@
 	request_body {
 		max_size 64MB
 	}
-	@claude {
-		method POST GET
-		path /v1/messages /v1/messages/count_tokens /v1/models /v1/models/*
+	@allowed {
+		path /v1/messages /v1/messages/* /v1/models /v1/models/*
+		path /api/claude_code/* /api/claude_cli/bootstrap /api/directory/* /api/oauth/profile /api/oauth/account/settings /api/web/domain_info /api/hello
 	}
-	handle @claude {
+	@credentials path /api/oauth/claude_cli/* /v1/oauth/* /api/oauth/token* /api/claude_code/*key* /api/claude_code/*token*
+	handle @credentials {
+		respond "not allowed by claude-proxy" 403
+	}
+	handle @allowed {
 		reverse_proxy https://api.anthropic.com {
 			header_up Host api.anthropic.com
 			header_up Authorization "Bearer {file./secrets/token}"
@@ -33,9 +48,22 @@
 			header_up -X-Forwarded-Host
 			header_up -X-Forwarded-Proto
 			header_up -Via
+			transport http {
+				# Our own name is an alias for this proxy on the editor's network: resolve the real one.
+				resolvers 1.1.1.1 1.0.0.1
+			}
 		}
 	}
 	handle {
 		respond "not allowed by claude-proxy" 403
 	}
+}
+
+https://api.anthropic.com:443 {
+	tls internal
+	import claude
+}
+
+http://:8080 {
+	import claude
 }

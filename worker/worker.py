@@ -767,6 +767,9 @@ def act_remove_project(s, a):
     if active_project() == name:
         symlink("projects/.none", f"{DATA}/active")
         restart_editor()
+    for link in ("build-src", "deps-src"):  # containers can't start with a dangling mount source
+        if os.readlink(f"{DATA}/{link}") == f"projects/{name}":
+            symlink("projects/.none", f"{DATA}/{link}")
     for tok in [t for t, sh in s["shares"].items() if sh["project"] == name]:
         del s["shares"][tok]
     del s["projects"][name]
@@ -925,13 +928,15 @@ def first_run(s):
 
 def main():
     for d in (PROJECTS, EMPTY, GITDIRS, KEYS, STATE, REQS, VIEW, f"{VIEW}/results", WWW, BUILDS,
-              f"{JOBS}/build", f"{JOBS}/deps", CONTROL, CLAUDE_DIR):
+              f"{JOBS}/build", f"{JOBS}/deps", CONTROL, CLAUDE_DIR, f"{DATA}/claude-pki", f"{DATA}/claude-ca"):
         os.makedirs(d, exist_ok=True)
     os.chmod(KEYS, 0o700)
     os.chmod(CLAUDE_DIR, 0o700)
+    os.chmod(f"{DATA}/claude-pki", 0o700)
     os.chmod(REQS, 0o700)
     for link in ("active", "build-src", "deps-src"):
-        if not os.path.lexists(f"{DATA}/{link}"):
+        # Missing or dangling (project gone): point at the empty placeholder.
+        if not os.path.exists(f"{DATA}/{link}"):
             symlink("projects/.none", f"{DATA}/{link}")
     s = load()
     write_view(s)

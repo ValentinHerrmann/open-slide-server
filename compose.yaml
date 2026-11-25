@@ -5,7 +5,8 @@
 #   - Only the gateway is reachable (on ${BIND}:${PORT}, default 127.0.0.1). It does NO login: put your
 #     own HTTPS + login in front, with /share/ left public (docs/ingress.md).
 #   - The editor runs code from the repos you open (Vite config, decks, the agent's tools). It has NO
-#     internet and NO real Claude token: Claude traffic goes through claude-proxy, which adds the token.
+#     real Claude token (claude-proxy adds it) and no direct network: web access only through
+#     egress-proxy (public addresses only; EDITOR_INTERNET=off disables it).
 #   - Nothing gets the Docker socket. Nothing runs as root. Every container is read-only with no capabilities.
 name: open-slide-server
 
@@ -48,19 +49,45 @@ services:
       HOME: /home/node
       EDITOR_BASE: /editor/
       PUBLIC_URL: ${PUBLIC_URL}
-      # Claude: placeholder token; claude-proxy swaps in the real one. No other route to the internet.
-      ANTHROPIC_BASE_URL: http://claude-proxy:8080
+      # Claude: placeholder token. In the editor, api.anthropic.com IS claude-proxy (network alias,
+      # trusted via its CA certificate), which swaps in the real token.
       CLAUDE_CODE_OAUTH_TOKEN: replaced-by-claude-proxy
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      NODE_EXTRA_CA_CERTS: /claude-ca/claude-ca.crt
+      DISABLE_TELEMETRY: "1"
+      DISABLE_ERROR_REPORTING: "1"
+      # Internet only through egress-proxy (EDITOR_INTERNET in .env); never to private addresses.
+      HTTP_PROXY: http://egress-proxy:3128
+      HTTPS_PROXY: http://egress-proxy:3128
+      http_proxy: http://egress-proxy:3128
+      https_proxy: http://egress-proxy:3128
+      NO_PROXY: api.anthropic.com,claude-proxy,localhost,127.0.0.1
+      no_proxy: api.anthropic.com,claude-proxy,localhost,127.0.0.1
+      NODE_USE_ENV_PROXY: "1"
+      NODE_NO_WARNINGS: "1"
       DISABLE_AUTOUPDATER: "1"
     volumes:
       - ./data/active:/workspace
       - ./data/home:/home/node
       - ./data/control:/control:ro
+      - ./data/claude-ca:/claude-ca:ro
     tmpfs: ["/tmp:uid=1000,exec"]
     networks: [sandbox]
     mem_limit: 1g
     pids_limit: 256
+
+  egress-proxy:
+    # The editor's only way to the internet: web ports to public addresses only (no host, no LAN).
+    # EDITOR_INTERNET=off in .env refuses everything.
+    <<: *hardened
+    image: ${OPEN_SLIDE_REGISTRY:-ghcr.io/valentinherrmann}/open-slide-server-gateway:${OPEN_SLIDE_VERSION:-latest}
+    depends_on: [gateway] # same image, built there
+    entrypoint: ["/bin/sh", "/etc/open-slide/egress/entrypoint.sh"]
+    environment:
+      EDITOR_INTERNET: ${EDITOR_INTERNET:-on}
+    tmpfs: [/tmp]
+    networks: [sandbox, editor-egress]
+    mem_limit: 96m
+    pids_limit: 64
 
   editor-relay:
     # The gateway reaches the editor only through this relay, so gateway and editor share no
@@ -79,11 +106,20 @@ services:
     <<: *hardened
     image: ${OPEN_SLIDE_REGISTRY:-ghcr.io/valentinherrmann}/open-slide-server-gateway:${OPEN_SLIDE_VERSION:-latest}
     depends_on: [gateway] # same image, built there
-    entrypoint: ["caddy", "run", "--config", "/etc/open-slide/proxy/Caddyfile", "--adapter", "caddyfile"]
+    entrypoint: ["/bin/sh", "/etc/open-slide/proxy/entrypoint.sh"]
+    environment:
+      XDG_DATA_HOME: /pki
     volumes:
       - ./data/claude:/secrets:ro # the Claude token (start page -> worker); nobody else mounts it
+      - ./data/claude-pki:/pki # the proxy's CA incl. key; nobody else mounts it
+      - ./data/claude-ca:/ca-out # only the CA certificate, read by the editor
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "443" # listen on 443 without root or capabilities
     tmpfs: [/tmp]
-    networks: [sandbox, proxy-egress]
+    networks:
+      sandbox:
+        aliases: [api.anthropic.com] # what the editor reaches for Anthropic
+      proxy-egress: {}
     mem_limit: 64m
     pids_limit: 64
 
@@ -146,8 +182,9 @@ networks:
   edge: {} # gateway: the published port
   egress: {} # worker (GitHub), deps (npm registry)
   proxy-egress: {} # claude-proxy -> api.anthropic.com
+  editor-egress: {} # egress-proxy -> internet (only what EDITOR_INTERNET allows)
   sandbox:
-    # editor <-> claude-proxy, editor <-> editor-relay. No internet (internal) and no IP for the host
+    # editor <-> claude-proxy / egress-proxy / editor-relay. No direct internet (internal) and no IP for the host
     # on this bridge (inhibit_ipv4), so the editor can't reach host services either.
     internal: true
     driver_opts:
