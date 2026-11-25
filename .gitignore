@@ -2,3 +2,4 @@
 secrets/
 compose.override.yaml
 data/
+protect/

@@ -49,7 +49,7 @@ git clone https://github.com/ValentinHerrmann/open-slide-server.git && cd open-s
 3. Prepares `./data`, starts everything and runs the self-check (`scripts/check.sh`).
 
 Then:
-1. Choose a [protection setup](#protection-setups) and point it at `127.0.0.1:<port>`. **Test it** (below) before you use it.
+1. Set up protection: `sh scripts/protect.sh` ([options](#protection-setups)), then `sh scripts/test-protection.sh <your URL>`.
 2. Under **Claude** on the start page, paste a token from `claude setup-token`. Run it on any computer with Claude Code; it's valid for one year.
 
 How to use the start page: [docs/usage.md](docs/usage.md).
@@ -58,27 +58,34 @@ The Claude agent only works with your own subscription. It is a single-user tool
 
 ## Protection setups
 
-Pick one; step-by-step configs are in [docs/ingress.md](docs/ingress.md). Whatever you choose, it must
-(1) serve HTTPS, (2) require **your** login for everything, (3) except paths starting with `/share/`
-(share links are meant to work without login).
+Every setup must (1) serve HTTPS, (2) require **your** login for everything, (3) except paths
+starting with `/share/` (share links are meant to work without login).
 
-| Setup | Good for | Effort | Notes |
-|---|---|---|---|
-| **Cloudflare Tunnel + Access** | most people: reachable from anywhere, no open ports | ~20 min, free plan | Login by email code / Google / GitHub. Needs a domain on Cloudflare. `/share` = one "Bypass" rule. |
-| **Tailscale only** | just you, on your own devices | ~5 min | `tailscale serve` → only your tailnet can reach it. Share links only work for people in your tailnet. Don't use Funnel: it would make everything public. |
-| **Caddy + basic auth** | quick start on a server with a public IP | ~10 min | One long random password (password manager). Simple, but no 2FA and no lockout: use a strong password. |
-| **Caddy/nginx + SSO proxy** (Authelia, authentik, oauth2-proxy) | you already run one, or want 2FA without Cloudflare | 30–60 min | Most control; you maintain the auth service. |
-
-**Test your protection** from a device that is *not* logged in (e.g. a private browser window or `curl` from another network):
+**The quick way:** run the generator. It asks a few questions, writes a ready-to-run config into
+`./protect/` (nothing outside it is changed) and prints the remaining steps for your dashboards:
 
 ```sh
-curl -sI https://slides.example.com/          # must be a login page/redirect (302/401), never 200
-curl -sI https://slides.example.com/editor/   # same
-curl -sI https://slides.example.com/__agent/status   # same
-curl -sI https://slides.example.com/share/AAAAAAAAAAAAAAAAAAAAAA/   # 404 (reaches the server, no such link)
+sh scripts/protect.sh
 ```
 
-If any of the first three returns `200`, stop the stack (`docker compose stop`) until your login works. (With Tailscale only, "can't connect" from outside your tailnet is the expected result.)
+| # | Setup | Good for | Effort | What you get |
+|---|---|---|---|---|
+| 1 | **Cloudflare Tunnel + Access** (recommended) | most people: reachable from anywhere, no open ports | ~20 min, free plan, domain on Cloudflare | `cloudflared` container + the Access apps to click. Login by email code / Google / GitHub. |
+| 2 | **Caddy + Cloudflare (proxied DNS)** | you run your own Caddy on a server with a public IP and want Cloudflare in front | ~30 min, free plan, domain on Cloudflare | Caddy (with JWT + DNS plugins) that only accepts Cloudflare (Authenticated Origin Pulls) **and** verifies the Access login token itself, so a misconfigured Access policy still fails closed. Certificates via DNS. The most defensive setup. |
+| 3 | **Caddy + basic auth** | quick start on a server with a public IP | ~10 min | Caddy + a generated 24-character password. No 2FA, no lockout. |
+| 4 | **Tailscale only** | just you, on your own devices | ~5 min | One `tailscale serve` command. Share links only work inside your tailnet. Never use Funnel for this port: it would make the editor public. |
+| 5 | **Caddy + SSO proxy** (Authelia, authentik, oauth2-proxy) | you already run one, or want 2FA without Cloudflare | 30–60 min | Caddy with `forward_auth` to your auth service. |
+
+Step-by-step explanations: [docs/ingress.md](docs/ingress.md).
+
+**Then test it.** This checks from the outside, without any login, that only `/share/` is open:
+
+```sh
+sh scripts/test-protection.sh https://slides.example.com
+```
+
+If it reports **OPEN**, stop the stack right away (`docker compose stop`) and fix your setup. Also open
+`/editor/` in a private browser window once: you must see a login first.
 
 ## Security model
 

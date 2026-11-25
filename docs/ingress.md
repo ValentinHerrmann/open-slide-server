@@ -9,7 +9,9 @@ use your Claude subscription, your decks and your GitHub access.
 2. Require **your** login for every path, **except** paths starting with `/share/`, which are the public share links.
 3. Let only you in. Anyone who gets past the login has full control: editor, agent, GitHub sync.
 
-After setting it up, run the test from the README.
+`sh scripts/protect.sh` generates the files for each setup below into `./protect/` and prints these
+steps with your host name filled in. Afterwards, check from the outside:
+`sh scripts/test-protection.sh https://your.host`
 
 ---
 
@@ -26,25 +28,31 @@ After setting it up, run the test from the README.
 4. **Optional hardening:** in the tunnel's public hostname → *Additional application settings* → *Access*, enable **Protect with Access** (select the host app). Then cloudflared itself rejects requests without a valid Access token, even if an Access policy is misconfigured.
 5. Run the README test.
 
-## B) Tailscale only
+## B) Caddy + Cloudflare (proxied DNS)
 
-*Only your own devices can reach it, nothing on the public internet. ~5 minutes if you use Tailscale.*
+*Your own Caddy on a server with a public IP, with Cloudflare in front. The most defensive setup:
+three independent checks have to pass.*
 
-```sh
-sudo tailscale serve --bg --https=443 http://127.0.0.1:8080
-```
+1. **Cloudflare Access** requires your login at the edge.
+2. **Authenticated Origin Pulls:** Caddy only accepts TLS connections that present Cloudflare's client certificate. Requests that go to your server's IP directly, bypassing Cloudflare, are refused.
+3. **The JWT check in Caddy:** every request except `/share/` must carry a valid Access login token for your app (the `caddy-jwt` plugin). If an Access policy is ever misconfigured, Caddy still answers 401.
 
-- The URL is `https://<machine>.<tailnet>.ts.net`. Set it as `PUBLIC_URL` in `.env`, then run `docker compose up -d`.
-- Restrict who in your tailnet may reach this machine with tailnet ACLs.
-- Share links work only for people in your tailnet. If you need public share links, choose another setup.
-- **Don't enable Tailscale Funnel for this port.** Funnel makes the whole port public, including the editor, not just `/share/`.
+Setup (`scripts/protect.sh`, option 2, generates all files):
+1. **DNS:** an A/AAAA record for the host, **Proxied** (orange cloud). Under SSL/TLS: mode **Full (strict)**, and enable **Authenticated Origin Pulls** (Origin Server).
+2. **Access apps:** `host` (Allow, your email) and `host/share` (Bypass, Everyone). Copy the host app's **AUD tag** into the Caddyfile.
+3. **Certificates via DNS-01:** create an API token with *Zone → DNS → Edit* for your zone and put it into `protect/cloudflare.env`. This works even though all HTTP traffic goes through Cloudflare.
+4. **Start:** `docker compose -f protect/compose.yaml up -d --build`. The first build compiles Caddy with the `caddy-jwt` and `caddy-dns/cloudflare` plugins, which takes a few minutes.
+
+If you already run Caddy, add the plugins to your build and copy the site block from `protect/Caddyfile` instead.
 
 ## C) Caddy + basic auth
 
 *Quick start on a server with a public IP. One strong password, no extra service.*
 
+`scripts/protect.sh` (option 3) generates a random 24-character password and the config. To do it by hand:
+
 ```sh
-caddy hash-password    # enter a long random password from your password manager
+docker run --rm -it caddy:2.11.4 caddy hash-password    # enter a long random password
 ```
 
 ```
@@ -66,7 +74,20 @@ slides.example.com {
 - Basic auth has no 2FA and no lockout, so use a long random password (20+ characters).
 - The browser remembers it per session.
 
-## D) Caddy / nginx + an SSO proxy (Authelia, authentik, oauth2-proxy)
+## D) Tailscale only
+
+*Only your own devices can reach it, nothing on the public internet. ~5 minutes if you use Tailscale.*
+
+```sh
+sudo tailscale serve --bg --https=443 http://127.0.0.1:8080
+```
+
+- The URL is `https://<machine>.<tailnet>.ts.net`. Set it as `PUBLIC_URL` in `.env`, then run `docker compose up -d`.
+- Restrict who in your tailnet may reach this machine with tailnet ACLs.
+- Share links work only for people in your tailnet. If you need public share links, choose another setup.
+- **Don't enable Tailscale Funnel for this port.** Funnel makes the whole port public, including the editor, not just `/share/`.
+
+## E) Caddy / nginx + an SSO proxy (Authelia, authentik, oauth2-proxy)
 
 *2FA and single sign-on without Cloudflare, if you run (or want) such a service.*
 
