@@ -24,9 +24,23 @@ const { createViteConfig } = await import(entry(core, './vite'));
 const { createServer, mergeConfig } = await import(entry(pkgDir('vite', core)));
 
 const base = process.env.EDITOR_BASE || '/editor/';
+// open-slide's config only scans app/main.tsx for dependencies. Deps reached through lazy routes
+// (@/lib/inspector/*, ...) and through the slides (@open-slide/core) are then found only when the
+// browser requests them, and Vite answers with a full page reload ("optimized dependencies
+// changed"), several times on a fresh project. Scanning the whole app and the project's own
+// sources up front finds them all before the first page load.
+const scanEntries = [
+  path.join(core, 'src/app/**/*.{ts,tsx}'),
+  '!' + path.join(core, 'src/app/**/*.{test,spec}.*'),
+  path.join(cwd, '{slides,themes}/**/*.{ts,tsx,js,jsx}'),
+  '!' + path.join(cwd, '{slides,themes}/**/*.{test,spec}.*'),
+].map((p) => p.split(path.sep).join('/'));
+const port = Number(process.env.EDITOR_PORT) || 5173;
 const server = await createServer(mergeConfig(await createViteConfig({ userCwd: cwd }), {
   base,
-  server: { host: '127.0.0.1', port: 5173, strictPort: true },
+  server: { host: '127.0.0.1', port, strictPort: true },
+  // The scan doesn't count the slides' aliased '@open-slide/core' import as a dependency; the browser does.
+  optimizeDeps: { entries: scanEntries, include: ['@open-slide/core'] },
 }));
 await server.listen();
-console.log(`open-slide editor listening on 127.0.0.1:5173${base}`);
+console.log(`open-slide editor listening on 127.0.0.1:${port}${base}`);
